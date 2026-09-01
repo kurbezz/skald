@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+  <channel>
+    <item>
+      <title>The.Matrix.1999.1080p.BluRay.x264-GROUP</title>
+      <guid>https://example.com/release/1</guid>
+      <link>magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD&amp;dn=The.Matrix.1999</link>
+      <size>1500000000</size>
+      <pubDate>Mon, 01 Sep 2026 00:00:00 +0000</pubDate>
+      <torznab:attr name="seeders" value="120" />
+      <torznab:attr name="peers" value="10" />
+      <torznab:attr name="indexer" value="SomeIndexer" />
+    </item>
+  </channel>
+</rss>
