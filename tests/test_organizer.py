@@ -421,10 +421,22 @@ def test_identity_checked_cleanup_preserves_replaced_file(tmp_path):
     path.parent.mkdir()
     path.write_text("owned")
     identity = file_identity(path)
-    path.unlink()
-    path.write_text("foreign replacement")
 
-    cleanup = cleanup_owned_file(path, identity)
+    # Hold the original inode open across the unlink so the filesystem
+    # cannot immediately recycle its inode number for the replacement
+    # file below (observed on Linux tmpfs/ext4 in CI, not reproducible
+    # on macOS/APFS locally) -- otherwise the "foreign" file could end
+    # up sharing (device, inode) with the file we captured identity for,
+    # making this test assert a false negative rather than exercising a
+    # genuine identity mismatch.
+    kept_open = path.open("rb")
+    try:
+        path.unlink()
+        path.write_text("foreign replacement")
+
+        cleanup = cleanup_owned_file(path, identity)
+    finally:
+        kept_open.close()
 
     assert cleanup.foreign
     assert not cleanup.removed
