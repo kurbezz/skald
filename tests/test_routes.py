@@ -68,6 +68,14 @@ def test_search_grab_and_jobs_pages(tmp_path, monkeypatch):
         assert jobs_response.status_code == 200
         assert "The Matrix" in jobs_response.text
 
+        active_response = client.get("/jobs?tab=active")
+        assert active_response.status_code == 200
+        assert "The Matrix" in active_response.text
+
+        completed_response = client.get("/jobs?tab=completed")
+        assert completed_response.status_code == 200
+        assert "The Matrix" not in completed_response.text
+
 
 def test_grab_surfaces_qbittorrent_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "test2.db"))

@@ -8,6 +8,15 @@
   </div>
 </div>
 
+<div class="tab-bar">
+  <a href="/jobs?tab=active" class="tab-link {% if tab == 'active' %}active{% endif %}">
+    Active <span class="tab-count">{{ active_count }}</span>
+  </a>
+  <a href="/jobs?tab=completed" class="tab-link {% if tab == 'completed' %}active{% endif %}">
+    Completed <span class="tab-count">{{ completed_count }}</span>
+  </a>
+</div>
+
 {% if jobs %}
 <div class="panel table-wrap">
   <table>
@@ -53,7 +62,11 @@
 {% else %}
 <div class="panel empty-state">
   <div class="glyph">&mdash;</div>
-  <p>No jobs yet. Grab something from <a class="job-link" href="/search">search</a> to get started.</p>
+  {% if tab == "active" %}
+  <p>No active downloads. Grab something from <a class="job-link" href="/search">search</a> to get started.</p>
+  {% else %}
+  <p>Nothing completed yet.</p>
+  {% endif %}
 </div>
 {% endif %}
 {% endblock %}

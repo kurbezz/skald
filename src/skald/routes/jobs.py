@@ -11,6 +11,18 @@ from skald.models import JobStatus, MediaJob, MediaType
 router = APIRouter()
 templates = Jinja2Templates(directory="src/skald/templates")
 
+ACTIVE_TAB_STATUSES = (
+    JobStatus.QUEUED,
+    JobStatus.DOWNLOADING,
+    JobStatus.COMPLETED,
+    JobStatus.ORGANIZING,
+)
+COMPLETED_TAB_STATUSES = (
+    JobStatus.ORGANIZED,
+    JobStatus.NEEDS_ATTENTION,
+    JobStatus.FAILED,
+)
+
 
 @router.post("/grab")
 async def grab(
@@ -95,10 +107,27 @@ async def delete_job(request: Request, job_id: int):
 
 
 @router.get("/jobs", response_class=HTMLResponse)
-async def list_jobs(request: Request):
+async def list_jobs(request: Request, tab: str = "active"):
+    if tab not in ("active", "completed"):
+        tab = "active"
+
     with get_session(request.app.state.engine) as session:
-        jobs = session.exec(select(MediaJob).order_by(MediaJob.created_at.desc())).all()
-    return templates.TemplateResponse(request, "jobs.html", {"jobs": jobs})
+        all_jobs = session.exec(select(MediaJob).order_by(MediaJob.created_at.desc())).all()
+
+    active_jobs = [job for job in all_jobs if job.status in ACTIVE_TAB_STATUSES]
+    completed_jobs = [job for job in all_jobs if job.status in COMPLETED_TAB_STATUSES]
+    jobs = active_jobs if tab == "active" else completed_jobs
+
+    return templates.TemplateResponse(
+        request,
+        "jobs.html",
+        {
+            "jobs": jobs,
+            "tab": tab,
+            "active_count": len(active_jobs),
+            "completed_count": len(completed_jobs),
+        },
+    )
 
 
 @router.get("/jobs/{job_id}", response_class=HTMLResponse)
