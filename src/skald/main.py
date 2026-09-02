@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import SQLModel
 
@@ -47,6 +48,11 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory="src/skald/static"), name="static")
     app.include_router(search_router, dependencies=[Depends(require_auth)])
     app.include_router(jobs_router, dependencies=[Depends(require_auth)])
+
+    @app.get("/")
+    async def root() -> RedirectResponse:
+        return RedirectResponse(url="/jobs")
+
     return app
 
 

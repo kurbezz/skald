@@ -79,6 +79,16 @@ def test_search_grab_and_jobs_pages(tmp_path, monkeypatch):
         assert "The Matrix" not in completed_response.text
 
 
+def test_root_redirects_to_jobs(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test_root.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.get("/", follow_redirects=False)
+        assert response.status_code in (302, 307)
+        assert response.headers["location"] == "/jobs"
+
+
 def test_routes_require_auth_when_configured(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "auth.db"))
     monkeypatch.setenv("AUTH_USERNAME", "testuser")
