@@ -274,6 +274,11 @@ button.btn-quiet:hover {
   border-color: var(--text-faint);
 }
 
+button.btn-danger {
+  color: #2a0b10;
+  background: linear-gradient(155deg, #ff8b96, var(--red));
+}
+
 /* ---------- alerts ---------- */
 
 .alert {

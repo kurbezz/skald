@@ -25,6 +25,7 @@ class FakeQbitApi:
     def __init__(self):
         self.logged_in = False
         self.added = []
+        self.deleted = []
         self.torrents = []
 
     def auth_log_in(self):
@@ -38,6 +39,9 @@ class FakeQbitApi:
         if torrent_hashes:
             return [t for t in self.torrents if t.hash == torrent_hashes]
         return list(self.torrents)
+
+    def torrents_delete(self, delete_files=None, torrent_hashes=None):
+        self.deleted.append((delete_files, torrent_hashes))
 
 
 class ConflictQbitApi(FakeQbitApi):
@@ -86,6 +90,19 @@ def test_add_torrent_falls_back_to_diff_for_non_magnet():
     torrent_hash = client.add_torrent("http://example.com/file.torrent", category="skald-movie")
 
     assert torrent_hash == "newhash123"
+
+
+def test_delete_torrent_calls_api_with_delete_files():
+    fake = FakeQbitApi()
+    client = QbittorrentClient(
+        host="http://localhost:8080", username="admin", password="pw",
+        client_factory=lambda: fake,
+    )
+
+    client.delete_torrent("hash1")
+
+    assert fake.deleted == [(True, "hash1")]
+    assert fake.logged_in is True
 
 
 def test_get_status_maps_fields():

@@ -18,6 +18,7 @@
         <th>Title</th>
         <th>Status</th>
         <th>Progress</th>
+        <th>Actions</th>
       </tr>
     </thead>
     <tbody>
@@ -38,6 +39,11 @@
             </div>
             <span class="progress-pct">{{ (job.progress * 100) | round(0) | int }}%</span>
           </div>
+        </td>
+        <td>
+          <form method="post" action="/jobs/{{ job.id }}/delete" onsubmit="return confirm('Delete this job and its torrent + files from qBittorrent? This cannot be undone.');">
+            <button type="submit" class="btn-danger">Delete</button>
+          </form>
         </td>
       </tr>
       {% endfor %}

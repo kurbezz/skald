@@ -62,6 +62,10 @@ class QbittorrentClient:
             raise RuntimeError("qBittorrent did not report a new torrent after add")
         return new_hashes[0]
 
+    def delete_torrent(self, torrent_hash: str, delete_files: bool = True) -> None:
+        self._client.auth_log_in()
+        self._client.torrents_delete(delete_files=delete_files, torrent_hashes=torrent_hash)
+
     def get_status(self, torrent_hash: str) -> TorrentStatus:
         self._client.auth_log_in()
         torrents = self._client.torrents_info(torrent_hashes=torrent_hash)

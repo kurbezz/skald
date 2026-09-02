@@ -62,6 +62,38 @@ async def grab(
     return RedirectResponse(url="/jobs", status_code=303)
 
 
+@router.post("/jobs/{job_id}/delete")
+async def delete_job(request: Request, job_id: int):
+    qbit = request.app.state.qbit
+
+    with get_session(request.app.state.engine) as session:
+        job = session.get(MediaJob, job_id)
+        if job is None:
+            return RedirectResponse(url="/jobs", status_code=303)
+
+        try:
+            qbit.delete_torrent(job.qbit_hash, delete_files=True)
+        except Exception as exc:  # noqa: BLE001 - surface any qBittorrent failure to the user
+            return HTMLResponse(
+                "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+                "<title>Failed to delete torrent — Skald</title>"
+                "<link rel='stylesheet' href='/static/style.css'></head>"
+                "<body><div class='shell'><main class='error-page'>"
+                "<div class='glyph'>&times;</div>"
+                "<h1>Failed to delete torrent</h1>"
+                f"<p><code>{exc}</code></p>"
+                "<p>Check QBIT_HOST/QBIT_USER/QBIT_PASS.</p>"
+                "<a class='btn' href='/jobs'>Back to jobs</a>"
+                "</main></div></body></html>",
+                status_code=502,
+            )
+
+        session.delete(job)
+        session.commit()
+
+    return RedirectResponse(url="/jobs", status_code=303)
+
+
 @router.get("/jobs", response_class=HTMLResponse)
 async def list_jobs(request: Request):
     with get_session(request.app.state.engine) as session:

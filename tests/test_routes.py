@@ -22,12 +22,18 @@ class FakeQbit:
     def add_torrent(self, download_url, category):
         return "fakehash"
 
+    def delete_torrent(self, torrent_hash, delete_files=True):
+        return None
+
     def get_status(self, torrent_hash):
         raise NotImplementedError
 
 
 class FailingQbit:
     def add_torrent(self, download_url, category):
+        raise RuntimeError("401 Client Error: Unauthorized")
+
+    def delete_torrent(self, torrent_hash, delete_files=True):
         raise RuntimeError("401 Client Error: Unauthorized")
 
     def get_status(self, torrent_hash):
@@ -86,3 +92,54 @@ def test_grab_surfaces_qbittorrent_failure(tmp_path, monkeypatch):
 
         jobs_response = client.get("/jobs")
         assert "The Matrix" not in jobs_response.text
+
+
+def test_delete_job_removes_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test3.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.qbit = FakeQbit()
+        client.post(
+            "/grab",
+            data={
+                "release_title": "The.Matrix.1999.1080p.BluRay.x264-GROUP",
+                "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
+                "media_type": "movie",
+                "title": "The Matrix",
+                "year": 1999,
+            },
+        )
+
+        response = client.post("/jobs/1/delete", follow_redirects=False)
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/jobs"
+        jobs_response = client.get("/jobs")
+        assert "The Matrix" not in jobs_response.text
+
+
+def test_delete_job_surfaces_qbittorrent_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test4.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.qbit = FakeQbit()
+        client.post(
+            "/grab",
+            data={
+                "release_title": "The.Matrix.1999.1080p.BluRay.x264-GROUP",
+                "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
+                "media_type": "movie",
+                "title": "The Matrix",
+                "year": 1999,
+            },
+        )
+        app.state.qbit = FailingQbit()
+
+        response = client.post("/jobs/1/delete")
+
+        assert response.status_code == 502
+        assert "Failed to delete torrent" in response.text
+        jobs_response = client.get("/jobs")
+        assert "The Matrix" in jobs_response.text

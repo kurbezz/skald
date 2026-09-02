@@ -6,6 +6,9 @@
   <span class="badge badge-{{ job.status.value }}">
     <span class="badge-dot"></span>{{ job.status.value.replace('_', ' ') }}
   </span>
+  <form method="post" action="/jobs/{{ job.id }}/delete" onsubmit="return confirm('Delete this job and its torrent + files from qBittorrent? This cannot be undone.');">
+    <button type="submit" class="btn-danger">Delete</button>
+  </form>
 </div>
 
 {% if job.status.value == "downloading" %}
