@@ -31,6 +31,18 @@ def test_tv_target_path():
     assert path == Path("/library/tv/Breaking Bad/Season 01/Breaking Bad - S01E05.mkv")
 
 
+def test_tv_target_path_names_contiguous_multi_episode_video():
+    assert tv_target_path("/library/tv", "Black Mirror", 7, 1, ".mkv", (1, 2, 3, 4, 5, 6)) == (
+        Path("/library/tv/Black Mirror/Season 07/Black Mirror - S07E01-E06.mkv")
+    )
+
+
+def test_tv_target_path_names_non_contiguous_multi_episode_video():
+    assert tv_target_path("/library/tv", "Show", 1, 1, ".mkv", (1, 3, 5)) == (
+        Path("/library/tv/Show/Season 01/Show - S01E01-E03-E05.mkv")
+    )
+
+
 @pytest.mark.parametrize("name, expected", [
     ("Show.S01E02.mkv", (1, 2)),
     ("Show.S01.E02.mkv", (1, 2)),

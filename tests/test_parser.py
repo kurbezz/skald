@@ -8,6 +8,7 @@ def test_parse_movie_release():
     assert guess["media_type"] == "movie"
     assert guess["season"] is None
     assert guess["episode"] is None
+    assert guess["episode_set"] == ()
 
 
 def test_parse_tv_release():
@@ -15,4 +16,11 @@ def test_parse_tv_release():
     assert guess["title"] == "Breaking Bad"
     assert guess["season"] == 1
     assert guess["episode"] == 5
+    assert guess["episode_set"] == (5,)
     assert guess["media_type"] == "tv"
+
+
+def test_parse_multi_episode_release_preserves_first_episode_and_set():
+    guess = parse_release("Breaking.Bad.S01E03-E05.720p.HDTV.x264-GROUP")
+    assert guess["episode"] == 3
+    assert guess["episode_set"] == (3, 4, 5)

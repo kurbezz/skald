@@ -5,6 +5,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from skald.episodes import format_episode_label
 from skald.lifecycle import FileIdentity, file_identity, identity_matches
 
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".m4v"}
@@ -98,9 +99,17 @@ def movie_target_path(movies_root: str, title: str, year: int, source_ext: str) 
     return Path(movies_root) / folder_name / file_name
 
 
-def tv_target_path(tv_root: str, series: str, season: int, episode: int, source_ext: str) -> Path:
+def tv_target_path(
+    tv_root: str,
+    series: str,
+    season: int,
+    episode: int,
+    source_ext: str,
+    episode_set: tuple[int, ...] = (),
+) -> Path:
     season_folder = f"Season {season:02d}"
-    file_name = f"{series} - S{season:02d}E{episode:02d}{source_ext}"
+    episode_label = format_episode_label(episode_set or (episode,))
+    file_name = f"{series} - S{season:02d}{episode_label}{source_ext}"
     return Path(tv_root) / series / season_folder / file_name
 
 

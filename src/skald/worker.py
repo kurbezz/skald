@@ -7,6 +7,7 @@ from pathlib import Path
 from sqlalchemy import exists, update
 from sqlmodel import Session, select
 
+from skald.episodes import deserialize_episode_set
 from skald.lifecycle import FileIdentity, try_job_lock
 from skald.models import (
     FileLifecycle,
@@ -142,6 +143,17 @@ def organize_job(session: Session, job: MediaJob, movies_root: str, tv_root: str
         organize_tv_pack(session, job, tv_root, video_files)
         return
 
+    episode_set = ()
+    if job.type == MediaType.TV:
+        try:
+            episode_set = deserialize_episode_set(job.episode_set)
+        except ValueError as exc:
+            job.status = JobStatus.NEEDS_ATTENTION
+            job.error_message = f"Malformed episode_set metadata: {exc}"
+            session.add(job)
+            session.commit()
+            return
+
     job.organization_mode = OrganizationMode.SCALAR
     job.status = JobStatus.ORGANIZING
     session.add(job)
@@ -153,7 +165,14 @@ def organize_job(session: Session, job: MediaJob, movies_root: str, tv_root: str
     if job.type == MediaType.MOVIE:
         target = movie_target_path(movies_root, job.title, job.year, ext)
     else:
-        target = tv_target_path(tv_root, job.title, job.season, job.episode, ext)
+        target = tv_target_path(
+            tv_root,
+            job.title,
+            job.season,
+            job.episode,
+            ext,
+            episode_set,
+        )
 
     try:
         link_file(source, target)

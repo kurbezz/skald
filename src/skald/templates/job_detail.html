@@ -44,7 +44,7 @@
   {% if job.type.value == "tv" %}
   <div class="detail-field">
     <div class="k">Season / Episode</div>
-    <div class="v">S{{ job.season or '?' }}E{{ job.episode or '?' }}</div>
+    <div class="v">S{{ job.season or '?' }}{{ episode_label or ('E' ~ (job.episode or '?')) }}</div>
   </div>
   {% endif %}
   <div class="detail-field">
@@ -72,18 +72,24 @@
   <h2>Retry Organize</h2>
   <form method="post" action="/jobs/{{ job.id }}/retry" class="retry-form">
     <label>Title
-      <input type="text" name="title" value="{{ job.title }}">
+      <input type="text" name="title" value="{{ job.title }}" required>
     </label>
     <label>Year
-      <input type="number" name="year" value="{{ job.year or '' }}">
+      <input type="number" name="year" value="{{ job.year or '' }}"{% if job.type.value == "movie" %} required{% endif %}>
     </label>
     {% if job.type.value == "tv" %}
     <label>Season
-      <input type="number" name="season" value="{{ job.season or '' }}">
+      <input type="number" name="season" value="{{ job.season or '' }}" required>
     </label>
     <label>Episode
-      <input type="number" name="episode" value="{{ job.episode or '' }}">
+      <input type="number" name="episode" value="{{ job.episode or '' }}" required>
     </label>
+    {% if episode_set_input %}
+    <label class="episode-set-field">Episode set
+      <input type="text" name="episode_set" value="{{ episode_set_input }}" aria-describedby="episode-set-help" required>
+      <span id="episode-set-help" class="episode-set-help">Use episode numbers or ranges, for example 1-6 or 1-3,5.</span>
+    </label>
+    {% endif %}
     {% endif %}
     <button type="submit">Retry Organize</button>
   </form>

@@ -45,6 +45,7 @@ class MediaJob(SQLModel, table=True):
     year: Optional[int] = None
     season: Optional[int] = None
     episode: Optional[int] = None
+    episode_set: Optional[str] = None
     release_title: str
     qbit_hash: str
     category: str

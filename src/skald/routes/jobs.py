@@ -1,12 +1,17 @@
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, Form, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import select
 
 from skald.db import get_session
+from skald.episodes import (
+    format_episode_set_input,
+    parse_episode_set_input,
+    serialize_episode_set,
+)
 from skald.lifecycle import try_job_lock
 from skald.models import JobStatus, MediaJob, MediaType, OrganizedFile
 from skald.worker import DeletionOutcome, reconcile_deleting_job, request_job_deletion
@@ -56,17 +61,86 @@ async def wait_for_websocket_disconnect(websocket: WebSocket) -> None:
             return
 
 
+def validate_episode_set(
+    media_type: str | MediaType,
+    episode: Optional[int],
+    episode_set: Optional[str],
+    episode_set_supplied: bool,
+) -> Optional[str]:
+    """Validate form episode-set input and return its persisted representation."""
+    if not episode_set_supplied:
+        return None
+    if media_type != MediaType.TV and media_type != MediaType.TV.value:
+        raise HTTPException(status_code=422, detail="episode sets are only valid for TV")
+
+    try:
+        episodes = parse_episode_set_input(episode_set or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid episode set: {exc}") from exc
+    if episode != episodes[0]:
+        raise HTTPException(status_code=422, detail="episode must match the episode set start")
+    return serialize_episode_set(episodes) if len(episodes) > 1 else None
+
+
+def validate_job_submission(
+    media_type: str | MediaType,
+    title: Optional[str],
+    season: Optional[int],
+    episode: Optional[int],
+    episode_set: Optional[str],
+    episode_set_supplied: bool,
+) -> Optional[str]:
+    """Validate shared grab/retry metadata before any side effects or mutation."""
+    if not title or not title.strip():
+        raise HTTPException(status_code=422, detail="title is required")
+    if media_type == MediaType.TV or media_type == MediaType.TV.value:
+        if season is None:
+            raise HTTPException(status_code=422, detail="TV season is required")
+        if episode is None:
+            raise HTTPException(status_code=422, detail="TV episode is required")
+    return validate_episode_set(media_type, episode, episode_set, episode_set_supplied)
+
+
+def _episode_set_detail_context(job: Optional[MediaJob]) -> dict[str, str]:
+    if job is None or not job.episode_set:
+        return {"episode_label": "", "episode_set_input": ""}
+    try:
+        episodes = parse_episode_set_input(job.episode_set)
+        episode_set_input = format_episode_set_input(episodes)
+    except ValueError:
+        return {"episode_label": "", "episode_set_input": ""}
+
+    episode_label = ",".join(
+        "-".join(f"E{int(episode):02d}" for episode in episode_range.split("-"))
+        for episode_range in episode_set_input.split(",")
+    )
+    return {"episode_label": episode_label, "episode_set_input": episode_set_input}
+
+
 @router.post("/grab")
 async def grab(
     request: Request,
     release_title: str = Form(...),
     download_url: str = Form(...),
     media_type: str = Form(...),
-    title: str = Form(...),
+    title: Optional[str] = Form(None),
     year: Optional[int] = Form(None),
     season: Optional[int] = Form(None),
     episode: Optional[int] = Form(None),
+    episode_set: Optional[str] = Form(None),
 ):
+    form = await request.form()
+    persisted_episode_set = validate_job_submission(
+        media_type,
+        title,
+        season,
+        episode,
+        episode_set,
+        "episode_set" in form,
+    )
+    if media_type == "movie" and year is None:
+        raise HTTPException(status_code=422, detail="movie year is required")
+
     settings = request.app.state.settings
     qbit = request.app.state.qbit
     category = settings.category_movie if media_type == "movie" else settings.category_tv
@@ -94,6 +168,7 @@ async def grab(
             year=year,
             season=season,
             episode=episode,
+            episode_set=persisted_episode_set,
             release_title=release_title,
             qbit_hash=torrent_hash,
             category=category,
@@ -179,7 +254,11 @@ async def list_jobs(request: Request, tab: str = "active"):
 async def job_detail(request: Request, job_id: int):
     with get_session(request.app.state.engine) as session:
         job = session.get(MediaJob, job_id)
-    return templates.TemplateResponse(request, "job_detail.html", {"job": job})
+    return templates.TemplateResponse(
+        request,
+        "job_detail.html",
+        {"job": job, **_episode_set_detail_context(job)},
+    )
 
 
 @router.websocket("/ws/jobs/active")
@@ -237,10 +316,11 @@ async def job_status_ws(websocket: WebSocket, job_id: int):
 async def retry_job(
     request: Request,
     job_id: int,
-    title: str = Form(...),
+    title: Optional[str] = Form(None),
     year: Optional[int] = Form(None),
     season: Optional[int] = Form(None),
     episode: Optional[int] = Form(None),
+    episode_set: Optional[str] = Form(None),
 ):
     with get_session(request.app.state.engine) as session:
         with try_job_lock(job_id) as acquired:
@@ -252,10 +332,20 @@ async def retry_job(
             if job.status == JobStatus.DELETING:
                 # Never destroy durable delete intent with a retry write.
                 return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+            form = await request.form()
+            persisted_episode_set = validate_job_submission(
+                job.type,
+                title,
+                season,
+                episode,
+                episode_set,
+                "episode_set" in form,
+            )
             job.title = title
             job.year = year
             job.season = season
             job.episode = episode
+            job.episode_set = persisted_episode_set
             has_residual_pack_ledger = (
                 job.type == MediaType.TV
                 and session.exec(

@@ -16,6 +16,8 @@ def migrate_schema(engine) -> None:
         column_names = {column[1] for column in columns}
         if "library_path" not in column_names:
             connection.exec_driver_sql("ALTER TABLE mediajob ADD COLUMN library_path VARCHAR")
+        if "episode_set" not in column_names:
+            connection.exec_driver_sql("ALTER TABLE mediajob ADD COLUMN episode_set VARCHAR")
         # NOTE: the literals below for `organization_mode`/`lifecycle` must be
         # the uppercase Python Enum *member names* (`SCALAR`, `PACK`,
         # `LEGACY_UNVERIFIED`), not their lowercase string *values*.

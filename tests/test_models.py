@@ -57,6 +57,44 @@ def test_lifecycle_schema_create_all_uses_scalar_server_default(tmp_path):
     assert organization_mode[4].strip("'") == "SCALAR"
 
 
+def test_migrate_schema_adds_nullable_episode_set_to_legacy_mediajob(tmp_path):
+    engine = get_engine(str(tmp_path / "legacy-episode-set.db"))
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE mediajob ("
+            "id INTEGER PRIMARY KEY, type VARCHAR NOT NULL, title VARCHAR NOT NULL, "
+            "year INTEGER, season INTEGER, episode INTEGER, "
+            "release_title VARCHAR NOT NULL, qbit_hash VARCHAR NOT NULL, "
+            "category VARCHAR NOT NULL, status VARCHAR NOT NULL, "
+            "error_message VARCHAR, content_path VARCHAR, library_path VARCHAR, "
+            "progress FLOAT NOT NULL DEFAULT 0.0, "
+            "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO mediajob "
+            "(id, type, title, release_title, qbit_hash, category, status, "
+            "progress, created_at, updated_at) VALUES "
+            "(1, 'TV', 'Show', 'Show.S01', 'hash', 'skald-tv', 'QUEUED', "
+            "0.0, '2026-09-02T00:00:00', '2026-09-02T00:00:00')"
+        )
+
+    migrate_schema(engine)
+
+    with engine.connect() as connection:
+        columns = connection.exec_driver_sql("PRAGMA table_info(mediajob)").fetchall()
+        episode_set = next(column for column in columns if column[1] == "episode_set")
+        persisted_episode_set = connection.exec_driver_sql(
+            "SELECT episode_set FROM mediajob WHERE id = 1"
+        ).scalar()
+
+    assert episode_set[2] == "VARCHAR"
+    assert episode_set[3] == 0
+    assert persisted_episode_set is None
+
+    with Session(engine) as session:
+        assert session.get(MediaJob, 1).episode_set is None
+
+
 def test_new_organized_file_requires_explicit_lifecycle(tmp_path):
     engine = get_engine(str(tmp_path / "explicit-lifecycle.db"))
     SQLModel.metadata.create_all(engine)

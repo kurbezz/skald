@@ -288,6 +288,71 @@ async def test_poll_once_organizes_completed_tv_episode(tmp_path):
         assert refreshed.library_path == str(target)
 
 
+async def test_poll_once_organizes_single_video_multi_episode_tv_target(tmp_path):
+    engine = make_engine()
+    content_dir = tmp_path / "downloads" / "Black.Mirror.S07E01-E06"
+    content_dir.mkdir(parents=True)
+    (content_dir / "episode.mkv").write_text("data")
+
+    with Session(engine) as session:
+        session.add(MediaJob(
+            type=MediaType.TV, title="Black Mirror", season=7, episode=1,
+            episode_set="[1,2,3,4,5,6]", release_title="Black.Mirror.S07E01-E06",
+            qbit_hash="hash1", category="skald-tv", status=JobStatus.DOWNLOADING,
+        ))
+        session.commit()
+
+    qbit = FakeQbit({
+        "hash1": TorrentStatus(hash="hash1", progress=1.0, state="uploading",
+                                content_path=str(content_dir),
+                                save_path=str(tmp_path / "downloads")),
+    })
+    tv_root = tmp_path / "library" / "tv"
+
+    with Session(engine) as session:
+        await poll_once(session, qbit, movies_root=str(tmp_path / "movies"),
+                        tv_root=str(tv_root))
+
+    target = tv_root / "Black Mirror" / "Season 07" / "Black Mirror - S07E01-E06.mkv"
+    assert target.exists()
+    with Session(engine) as session:
+        job = session.exec(select(MediaJob)).one()
+        assert job.status == JobStatus.ORGANIZED
+        assert job.organization_mode == OrganizationMode.SCALAR
+        assert job.library_path == str(target)
+
+
+async def test_poll_once_marks_single_video_tv_with_malformed_episode_set_needs_attention(tmp_path):
+    engine = make_engine()
+    content_dir = tmp_path / "downloads" / "Black.Mirror.S07E01-E06"
+    content_dir.mkdir(parents=True)
+    (content_dir / "episode.mkv").write_text("data")
+
+    with Session(engine) as session:
+        session.add(MediaJob(
+            type=MediaType.TV, title="Black Mirror", season=7, episode=1,
+            episode_set="[1,0]", release_title="Black.Mirror.S07E01-E06",
+            qbit_hash="hash1", category="skald-tv", status=JobStatus.DOWNLOADING,
+        ))
+        session.commit()
+
+    qbit = FakeQbit({
+        "hash1": TorrentStatus(hash="hash1", progress=1.0, state="uploading",
+                                content_path=str(content_dir),
+                                save_path=str(tmp_path / "downloads")),
+    })
+
+    for _ in range(2):
+        with Session(engine) as session:
+            await poll_once(session, qbit, str(tmp_path / "movies"), str(tmp_path / "tv"))
+
+    with Session(engine) as session:
+        job = session.exec(select(MediaJob)).one()
+        assert job.status == JobStatus.NEEDS_ATTENTION
+        assert "malformed episode_set" in job.error_message.lower()
+        assert job.library_path is None
+
+
 async def test_poll_once_organizes_all_episodes_in_tv_pack(tmp_path):
     engine = make_engine()
     content_dir = tmp_path / "downloads" / "Show.S01"
@@ -300,7 +365,8 @@ async def test_poll_once_organizes_all_episodes_in_tv_pack(tmp_path):
     with Session(engine) as session:
         session.add(MediaJob(
             type=MediaType.TV, title="Show", release_title="Show.S01",
-            qbit_hash="hash", category="skald-tv", status=JobStatus.DOWNLOADING,
+            episode_set="[1,2,3,4,5,6]", qbit_hash="hash", category="skald-tv",
+            status=JobStatus.DOWNLOADING,
         ))
         session.commit()
     qbit = FakeQbit({

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from fastapi.responses import HTMLResponse
 from sqlmodel import Session, select
 from starlette.testclient import WebSocketDenialResponse
 
@@ -13,6 +14,7 @@ from skald.lifecycle import file_identity
 from skald.main import create_app
 from skald.models import FileLifecycle, JobStatus, MediaJob, MediaType, OrganizationMode, OrganizedFile
 from skald.routes import jobs as jobs_routes
+from skald.routes import search as search_routes
 
 
 class FakeIndexer:
@@ -70,6 +72,15 @@ class FakeQbit:
         raise NotImplementedError
 
 
+class RecordingQbit:
+    def __init__(self):
+        self.add_calls = []
+
+    def add_torrent(self, download_url, category):
+        self.add_calls.append((download_url, category))
+        return "fakehash"
+
+
 class FailingQbit:
     def add_torrent(self, download_url, category):
         raise RuntimeError("401 Client Error: Unauthorized")
@@ -124,6 +135,338 @@ def test_search_grab_and_jobs_pages(tmp_path, monkeypatch):
         assert "The Matrix" not in completed_response.text
         assert 'data-active-jobs' not in completed_response.text
         assert 'active_jobs.js' not in completed_response.text
+
+
+def test_search_hides_grab_metadata_when_movie_parse_is_complete(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "complete_movie.db"))
+    monkeypatch.setattr(
+        search_routes,
+        "parse_release",
+        lambda _: {"title": "The Matrix", "year": 1999, "season": None, "episode": None},
+    )
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.indexer = FakeIndexer()
+        response = client.get("/search", params={"q": "matrix", "type": "movie"})
+
+    assert response.status_code == 200
+    assert 'name="title" value="The Matrix"' in response.text
+    assert 'name="year" value="1999"' in response.text
+    assert "data-grab-review-toggle" not in response.text
+    assert 'type="text" name="title"' not in response.text
+
+
+def test_search_grabs_complete_tv_parse_without_year(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "complete_tv_without_year.db"))
+    monkeypatch.setattr(
+        search_routes,
+        "parse_release",
+        lambda _: {"title": "Breaking Bad", "year": None, "season": 1, "episode": 5},
+    )
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.indexer = FakeIndexer()
+        app.state.qbit = FakeQbit()
+        response = client.get("/search", params={"q": "breaking bad", "type": "tv"})
+
+        assert response.status_code == 200
+        assert "data-grab-review-toggle" not in response.text
+        assert 'name="title" value="Breaking Bad"' in response.text
+        assert 'name="season" value="1"' in response.text
+        assert 'name="episode" value="5"' in response.text
+        assert 'value="None"' not in response.text
+
+        grab_response = client.post(
+            "/grab",
+            data={
+                "release_title": "Breaking.Bad.S01E05.720p.HDTV.x264-GROUP",
+                "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
+                "media_type": "tv",
+                "title": "Breaking Bad",
+                "season": 1,
+                "episode": 5,
+            },
+            follow_redirects=False,
+        )
+
+    assert grab_response.status_code == 303
+    with Session(app.state.engine) as session:
+        job = session.exec(select(MediaJob)).one()
+    assert job.type == MediaType.TV
+    assert job.title == "Breaking Bad"
+    assert job.year is None
+    assert job.season == 1
+    assert job.episode == 5
+
+
+def test_grab_persists_normalized_tv_episode_set_before_adding_torrent(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "grab-tv-pack.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        qbit = RecordingQbit()
+        app.state.qbit = qbit
+        response = client.post(
+            "/grab",
+            data={
+                "release_title": "Show.S01E01-E06.1080p",
+                "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
+                "media_type": "tv",
+                "title": "Show",
+                "season": 1,
+                "episode": 1,
+                "episode_set": "1-6",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert len(qbit.add_calls) == 1
+    with Session(app.state.engine) as session:
+        job = session.exec(select(MediaJob)).one()
+    assert job.episode == 1
+    assert job.episode_set == "[1,2,3,4,5,6]"
+
+
+@pytest.mark.parametrize(
+    "episode_set",
+    [
+        pytest.param("1-2-3", id="malformed"),
+        pytest.param("6-1", id="reversed"),
+        pytest.param("0", id="zero"),
+        pytest.param("2-6", id="start-mismatch"),
+    ],
+)
+def test_grab_rejects_invalid_tv_episode_sets_before_adding_torrent(
+    tmp_path, monkeypatch, episode_set
+):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "invalid-tv-episode-set.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        qbit = RecordingQbit()
+        app.state.qbit = qbit
+        response = client.post(
+            "/grab",
+            data={
+                "release_title": "Show.S01E01-E06.1080p",
+                "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
+                "media_type": "tv",
+                "title": "Show",
+                "season": 1,
+                "episode": 1,
+                "episode_set": episode_set,
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 422
+    assert qbit.add_calls == []
+
+
+def test_grab_rejects_explicitly_empty_tv_episode_set_before_adding_torrent(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "empty-tv-episode-set.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        qbit = RecordingQbit()
+        app.state.qbit = qbit
+        response = client.post(
+            "/grab",
+            data={
+                "release_title": "Show.S01E01-E06.1080p",
+                "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
+                "media_type": "tv",
+                "title": "Show",
+                "season": 1,
+                "episode": 1,
+                "episode_set": "",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 422
+    assert qbit.add_calls == []
+
+
+def test_grab_rejects_episode_sets_supplied_for_movies(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "movie-episode-set.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        qbit = RecordingQbit()
+        app.state.qbit = qbit
+        response = client.post(
+            "/grab",
+            data={
+                "release_title": "Movie.2024.1080p",
+                "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
+                "media_type": "movie",
+                "title": "Movie",
+                "year": 2024,
+                "episode_set": "1-6",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 422
+    assert qbit.add_calls == []
+
+
+def test_search_renders_complete_tv_multi_episode_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "complete_tv_multi_episode.db"))
+    monkeypatch.setattr(
+        search_routes,
+        "parse_release",
+        lambda _: {
+            "title": "Black Mirror",
+            "year": 2025,
+            "season": 7,
+            "episode": 1,
+            "episode_set": (1, 2, 3, 4, 5, 6),
+        },
+    )
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.indexer = FakeIndexer()
+        response = client.get("/search", params={"q": "black mirror", "type": "tv"})
+
+    assert response.status_code == 200
+    assert "data-grab-review-toggle" not in response.text
+    assert 'name="episode" value="1"' in response.text
+    assert re.search(
+        r'<input\b[^>]*\btype="hidden"[^>]*\bname="episode_set"[^>]*'
+        r'\bvalue="\[1,2,3,4,5,6\]"[^>]*>',
+        response.text,
+    )
+    assert 'name="episode" value="[1, 2, 3, 4, 5, 6]"' not in response.text
+    assert "E01-E06" in response.text
+
+
+def test_search_renders_multi_episode_set_in_incomplete_review(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "incomplete_tv_multi_episode.db"))
+    monkeypatch.setattr(
+        search_routes,
+        "parse_release",
+        lambda _: {
+            "title": None,
+            "year": 2025,
+            "season": 7,
+            "episode": 1,
+            "episode_set": (1, 2, 3, 4, 5, 6),
+        },
+    )
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.indexer = FakeIndexer()
+        response = client.get("/search", params={"q": "black mirror", "type": "tv"})
+
+    assert response.status_code == 200
+    assert "data-grab-review-toggle" in response.text
+    assert 'name="episode" value="1"' in response.text
+    assert re.search(
+        r'<input\b[^>]*\btype="text"[^>]*\bname="episode_set"[^>]*'
+        r'\bvalue="1-6"[^>]*\brequired\b[^>]*>',
+        response.text,
+    )
+    for name in ("title", "season", "episode"):
+        assert re.search(
+            rf'<input\b[^>]*\bname="{name}"[^>]*\brequired\b[^>]*>', response.text
+        )
+
+
+@pytest.mark.parametrize(
+    ("media_type", "invalid_field", "invalid_value"),
+    [
+        pytest.param("movie", "title", None, id="movie-missing-title"),
+        pytest.param("movie", "title", "", id="movie-blank-title"),
+        pytest.param("movie", "year", None, id="movie-missing-year"),
+        pytest.param("movie", "year", "", id="movie-blank-year"),
+        pytest.param("tv", "title", None, id="tv-missing-title"),
+        pytest.param("tv", "title", "", id="tv-blank-title"),
+        pytest.param("tv", "season", None, id="tv-missing-season"),
+        pytest.param("tv", "season", "", id="tv-blank-season"),
+        pytest.param("tv", "episode", None, id="tv-missing-episode"),
+        pytest.param("tv", "episode", "", id="tv-blank-episode"),
+    ],
+)
+def test_grab_rejects_missing_or_blank_required_metadata(
+    tmp_path, monkeypatch, media_type, invalid_field, invalid_value
+):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "invalid-grab-metadata.db"))
+    app = create_app()
+    metadata = {
+        "release_title": "Example.Release",
+        "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
+        "media_type": media_type,
+        "title": "Example Title",
+        "year": 2024,
+        "season": 1,
+        "episode": 5,
+    }
+    if invalid_value is None:
+        del metadata[invalid_field]
+    else:
+        metadata[invalid_field] = invalid_value
+
+    with TestClient(app) as client:
+        qbit = RecordingQbit()
+        app.state.qbit = qbit
+        response = client.post("/grab", data=metadata, follow_redirects=False)
+
+    assert response.status_code == 422
+    assert qbit.add_calls == []
+
+
+@pytest.mark.parametrize(
+    ("media_type", "guess", "expected_names", "required_names", "optional_names"),
+    [
+        (
+            "movie",
+            {"title": "The Matrix", "year": None, "season": None, "episode": None},
+            ["title", "year"],
+            ["title", "year"],
+            [],
+        ),
+        (
+            "tv",
+            {"title": "Breaking Bad", "year": None, "season": 1, "episode": None},
+            ["title", "year", "season", "episode"],
+            ["title", "season", "episode"],
+            ["year"],
+        ),
+    ],
+)
+def test_search_marks_incomplete_metadata_for_review(
+    tmp_path, monkeypatch, media_type, guess, expected_names, required_names, optional_names
+):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / f"incomplete_{media_type}.db"))
+    monkeypatch.setattr(search_routes, "parse_release", lambda _: guess)
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.indexer = FakeIndexer()
+        response = client.get("/search", params={"q": "matrix", "type": media_type})
+
+    assert response.status_code == 200
+    assert "Needs review" in response.text
+    assert "data-grab-review-toggle" in response.text
+    assert 'aria-expanded="false"' in response.text
+    assert "data-grab-review-fields hidden" in response.text
+    for name in expected_names:
+        assert f'name="{name}"' in response.text
+    for name in required_names:
+        assert re.search(
+            rf'<input\b[^>]*\bname="{name}"[^>]*\brequired\b[^>]*>', response.text
+        )
+    for name in optional_names:
+        input_tag = re.search(rf'<input\b[^>]*\bname="{name}"[^>]*>', response.text)
+        assert input_tag is not None
+        assert "required" not in input_tag.group()
 
 
 @pytest.mark.parametrize(
@@ -391,6 +734,49 @@ def test_job_detail_without_year_shows_only_em_dash_in_metadata(tmp_path, monkey
     assert detail_response.status_code == 200
     assert '<div class="k">Year</div>' not in detail_response.text
     assert "—" in unescape(detail_response.text)
+
+
+@pytest.mark.parametrize(
+    ("stored_episode_set", "expected_label", "expected_input"),
+    [
+        pytest.param("[6,5,4,3,2,1]", "E01-E06", "1-6", id="normalizes-storage"),
+        pytest.param("not an episode set", "", "", id="ignores-invalid-storage"),
+    ],
+)
+def test_job_detail_supplies_safe_episode_set_context(
+    tmp_path, monkeypatch, stored_episode_set, expected_label, expected_input
+):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "detail-episode-set.db"))
+    app = create_app()
+    contexts = []
+
+    def capture_template_response(request, name, context, status_code=200):
+        contexts.append(context)
+        return HTMLResponse("captured", status_code=status_code)
+
+    monkeypatch.setattr(jobs_routes.templates, "TemplateResponse", capture_template_response)
+
+    with TestClient(app) as client:
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.TV,
+                title="Show",
+                season=1,
+                episode=1,
+                episode_set=stored_episode_set,
+                release_title="Show.S01E01-E06",
+                qbit_hash="hash",
+                category="skald-tv",
+            )
+            session.add(job)
+            session.commit()
+            job_id = job.id
+
+        response = client.get(f"/jobs/{job_id}")
+
+    assert response.status_code == 200
+    assert contexts[-1]["episode_label"] == expected_label
+    assert contexts[-1]["episode_set_input"] == expected_input
 
 
 def test_active_jobs_websocket_streams_changed_snapshot(tmp_path, monkeypatch):
@@ -733,6 +1119,59 @@ def test_delete_job_retains_deleting_ledger_when_qbittorrent_fails(tmp_path, mon
         assert [row.path for row in session.exec(select(OrganizedFile)).all()] == [str(library_file)]
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("title", None, id="missing-title"),
+        pytest.param("title", "", id="blank-title"),
+        pytest.param("season", None, id="missing-season"),
+        pytest.param("season", "", id="blank-season"),
+        pytest.param("episode", None, id="missing-episode"),
+        pytest.param("episode", "", id="blank-episode"),
+        pytest.param("episode_set", "6-1", id="invalid-episode-set"),
+        pytest.param("episode_set", "", id="empty-episode-set"),
+    ],
+)
+def test_retry_rejects_invalid_tv_metadata_without_mutating_job(tmp_path, monkeypatch, field, value):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "invalid-retry-tv-metadata.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.TV,
+                title="Original Show",
+                season=1,
+                episode=1,
+                episode_set="[1,2,3,4,5,6]",
+                release_title="Show.S01E01-E06",
+                qbit_hash="hash",
+                category="skald-tv",
+                status=JobStatus.NEEDS_ATTENTION,
+                error_message="original error",
+            )
+            session.add(job)
+            session.commit()
+            job_id = job.id
+
+        data = {"title": "Updated Show", "season": 1, "episode": 1, "episode_set": "1-6"}
+        if value is None:
+            del data[field]
+        else:
+            data[field] = value
+        response = client.post(f"/jobs/{job_id}/retry", data=data, follow_redirects=False)
+
+    assert response.status_code == 422
+    with Session(app.state.engine) as session:
+        unchanged = session.get(MediaJob, job_id)
+    assert unchanged.status == JobStatus.NEEDS_ATTENTION
+    assert unchanged.title == "Original Show"
+    assert unchanged.season == 1
+    assert unchanged.episode == 1
+    assert unchanged.episode_set == "[1,2,3,4,5,6]"
+    assert unchanged.error_message == "original error"
+
+
 def test_retry_tv_pack_with_residual_ledger_commits_organizing_for_recovery(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "retry-pack.db"))
     app = create_app()
@@ -745,6 +1184,7 @@ def test_retry_tv_pack_with_residual_ledger_commits_organizing_for_recovery(tmp_
             job = MediaJob(
                 type=MediaType.TV, title="Show", release_title="Show.S01",
                 qbit_hash="hash", category="skald-tv", status=JobStatus.NEEDS_ATTENTION,
+                season=1, episode=1,
             )
             session.add(job)
             session.commit()
@@ -756,13 +1196,21 @@ def test_retry_tv_pack_with_residual_ledger_commits_organizing_for_recovery(tmp_
 
         response = client.post(
             f"/jobs/{job_id}/retry",
-            data={"title": "Show"},
+            data={
+                "title": "Show",
+                "season": 1,
+                "episode": 1,
+                "episode_set": "[6,5,4,3,2,1]",
+            },
             follow_redirects=False,
         )
 
         assert response.status_code == 303
         with Session(app.state.engine) as session:
-            assert session.get(MediaJob, job_id).status == JobStatus.ORGANIZING
+            retried = session.get(MediaJob, job_id)
+            assert retried.status == JobStatus.ORGANIZING
+            assert retried.episode == 1
+            assert retried.episode_set == "[1,2,3,4,5,6]"
 
 
 def test_delete_job_surfaces_qbittorrent_failure(tmp_path, monkeypatch):

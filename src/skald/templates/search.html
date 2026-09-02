@@ -63,13 +63,38 @@
             <input type="hidden" name="release_title" value="{{ item.release.title }}">
             <input type="hidden" name="download_url" value="{{ item.release.download_url }}">
             <input type="hidden" name="media_type" value="{{ type }}">
-            <input type="text" name="title" value="{{ item.guess.title or '' }}" placeholder="Title">
-            <input type="number" name="year" value="{{ item.guess.year or '' }}" placeholder="Year">
+            {% if item.needs_review %}
+            {% set review_id = "grab-review-" ~ loop.index0 %}
+            <div class="grab-review" data-grab-review>
+              <span class="grab-review-status">Needs review</span>
+              <button type="button" class="grab-review-toggle" data-grab-review-toggle
+                      aria-expanded="false" aria-controls="{{ review_id }}">Review metadata</button>
+              <div id="{{ review_id }}" class="grab-review-fields" data-grab-review-fields hidden>
+                <input type="text" name="title" value="{{ item.guess.title or '' }}" placeholder="Title" required>
+                <input type="number" name="year" value="{{ item.guess.year or '' }}" placeholder="Year"{% if type == "movie" %} required{% endif %}>
+                {% if type == "tv" %}
+                <input type="number" name="season" value="{{ item.guess.season or '' }}" placeholder="S" required>
+                <input type="number" name="episode" value="{{ item.guess.episode or '' }}" placeholder="E" required>
+                {% if item.episode_set_input %}
+                <input type="text" name="episode_set" value="{{ item.episode_set_input }}" placeholder="Episode set (e.g. 1-6 or 1-3,5)" required>
+                {% endif %}
+                {% endif %}
+                <button type="submit">Grab</button>
+              </div>
+            </div>
+            {% else %}
+            <input type="hidden" name="title" value="{{ item.guess.title or '' }}">
+            <input type="hidden" name="year" value="{{ item.guess.year or '' }}">
             {% if type == "tv" %}
-            <input type="number" name="season" value="{{ item.guess.season or '' }}" placeholder="S">
-            <input type="number" name="episode" value="{{ item.guess.episode or '' }}" placeholder="E">
+            <input type="hidden" name="season" value="{{ item.guess.season or '' }}">
+            <input type="hidden" name="episode" value="{{ item.guess.episode or '' }}">
+            {% if item.episode_set_value %}
+            <input type="hidden" name="episode_set" value="{{ item.episode_set_value }}">
+            <span class="grab-episode-set">{{ item.episode_label }}</span>
+            {% endif %}
             {% endif %}
             <button type="submit">Grab</button>
+            {% endif %}
           </form>
         </td>
       </tr>
@@ -83,4 +108,8 @@
   <p>No releases found for &ldquo;{{ query }}&rdquo;.</p>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if results %}<script type="module" src="/static/grab_metadata_review.mjs"></script>{% endif %}
 {% endblock %}

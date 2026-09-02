@@ -438,6 +438,44 @@ tbody tr:hover {
   align-items: center;
 }
 
+.grab-review {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.grab-review-status {
+  color: #ffb4bb;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.grab-review-toggle {
+  color: var(--text);
+  background: var(--red-soft);
+  border: 1px solid #f0616f55;
+}
+
+.grab-review-toggle:hover {
+  border-color: var(--red);
+}
+
+.grab-review-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.grab-review-fields[hidden] {
+  display: none;
+}
+
 .grab-form input[type="text"],
 .grab-form input[type="number"] {
   padding: 8px 10px;
@@ -668,6 +706,21 @@ a.job-link:hover {
   font-family: var(--font-display);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.retry-form .episode-set-field {
+  flex: 1 1 190px;
+}
+
+.retry-form .episode-set-help {
+  max-width: 270px;
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-transform: none;
 }
 
 /* ---------- empty state ---------- */
