@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     qbit_user: str = "admin"
     qbit_pass: str = "adminadmin"
 
+    auth_username: str = ""
+    auth_password: str = ""
+
     movies_library_path: str = "/library/movies"
     tv_library_path: str = "/library/tv"
 

@@ -79,6 +79,18 @@ def test_search_grab_and_jobs_pages(tmp_path, monkeypatch):
         assert "The Matrix" not in completed_response.text
 
 
+def test_routes_require_auth_when_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "auth.db"))
+    monkeypatch.setenv("AUTH_USERNAME", "testuser")
+    monkeypatch.setenv("AUTH_PASSWORD", "testpass")
+    app = create_app()
+
+    with TestClient(app) as client:
+        assert client.get("/jobs").status_code == 401
+        assert client.get("/jobs", auth=("wronguser", "wrongpass")).status_code == 401
+        assert client.get("/jobs", auth=("testuser", "testpass")).status_code == 200
+
+
 def test_grab_surfaces_qbittorrent_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "test2.db"))
     app = create_app()

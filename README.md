@@ -29,6 +29,12 @@ Set `MOVIES_LIBRARY_PATH=/library/movies` and `TV_LIBRARY_PATH=/library/tv`
 in `.env` to match the mounted volume, and point `QBIT_HOST` at your
 qBittorrent instance's Web UI address (reachable from the container).
 
+## Authentication
+
+Set both `AUTH_USERNAME` and `AUTH_PASSWORD` to enable HTTP Basic Auth for
+the whole app except `/static`. Leave them empty (the default) to disable
+authentication entirely.
+
 ## Docker Compose (full local stack for testing)
 
 `docker-compose.yml` runs skald alongside qBittorrent and Jackett so you

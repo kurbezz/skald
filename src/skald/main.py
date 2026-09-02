@@ -1,10 +1,11 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import SQLModel
 
+from skald.auth import require_auth
 from skald.config import get_settings
 from skald.db import get_engine, get_session, migrate_schema
 from skald.indexer.torznab import TorznabIndexer
@@ -44,8 +45,8 @@ def create_app() -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
     app.mount("/static", StaticFiles(directory="src/skald/static"), name="static")
-    app.include_router(search_router)
-    app.include_router(jobs_router)
+    app.include_router(search_router, dependencies=[Depends(require_auth)])
+    app.include_router(jobs_router, dependencies=[Depends(require_auth)])
     return app
 
 
