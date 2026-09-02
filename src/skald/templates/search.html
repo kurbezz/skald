@@ -1,42 +1,69 @@
 {% extends "base.html" %}
+{% block title %}Search — Skald{% endblock %}
 {% block content %}
-<h1>Search</h1>
-<form method="get" action="/search">
-  <input type="text" name="q" value="{{ query }}">
+<div class="page-head">
+  <div>
+    <h1>Search<span class="accent-dot">.</span></h1>
+    <p class="page-sub">Query your indexer and grab a release straight into qBittorrent.</p>
+  </div>
+</div>
+
+<form method="get" action="/search" class="search-form panel">
+  <input type="text" name="q" value="{{ query }}" placeholder="Search movies or TV shows&hellip;">
   <select name="type">
     <option value="movie" {% if type == "movie" %}selected{% endif %}>Movie</option>
     <option value="tv" {% if type == "tv" %}selected{% endif %}>TV</option>
   </select>
   <button type="submit">Search</button>
 </form>
-{% if error %}<p style="color: red">{{ error }}</p>{% endif %}
-<table>
-  <thead>
-    <tr><th>Release</th><th>Indexer</th><th>Size</th><th>Seeders</th><th>Confirm &amp; Grab</th></tr>
-  </thead>
-  <tbody>
-    {% for item in results %}
-    <tr>
-      <td>{{ item.release.title }}</td>
-      <td>{{ item.release.indexer }}</td>
-      <td>{{ (item.release.size_bytes / 1073741824) | round(2) }} GB</td>
-      <td>{{ item.release.seeders }}</td>
-      <td>
-        <form method="post" action="/grab">
-          <input type="hidden" name="release_title" value="{{ item.release.title }}">
-          <input type="hidden" name="download_url" value="{{ item.release.download_url }}">
-          <input type="hidden" name="media_type" value="{{ type }}">
-          <input type="text" name="title" value="{{ item.guess.title or '' }}" placeholder="Title">
-          <input type="number" name="year" value="{{ item.guess.year or '' }}" placeholder="Year">
-          {% if type == "tv" %}
-          <input type="number" name="season" value="{{ item.guess.season or '' }}" placeholder="Season">
-          <input type="number" name="episode" value="{{ item.guess.episode or '' }}" placeholder="Episode">
-          {% endif %}
-          <button type="submit">Grab</button>
-        </form>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+{% if results %}
+<div class="panel table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Release</th>
+        <th>Indexer</th>
+        <th>Size</th>
+        <th>Peers</th>
+        <th>Confirm &amp; Grab</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in results %}
+      <tr>
+        <td><span class="release-title">{{ item.release.title }}</span></td>
+        <td class="cell-muted">{{ item.release.indexer }}</td>
+        <td class="cell-muted">{{ (item.release.size_bytes / 1073741824) | round(2) }} GB</td>
+        <td>
+          <span class="seeders">&#9650;{{ item.release.seeders }}</span>
+          <span class="leechers">&#9660;{{ item.release.leechers }}</span>
+        </td>
+        <td>
+          <form method="post" action="/grab" class="grab-form">
+            <input type="hidden" name="release_title" value="{{ item.release.title }}">
+            <input type="hidden" name="download_url" value="{{ item.release.download_url }}">
+            <input type="hidden" name="media_type" value="{{ type }}">
+            <input type="text" name="title" value="{{ item.guess.title or '' }}" placeholder="Title">
+            <input type="number" name="year" value="{{ item.guess.year or '' }}" placeholder="Year">
+            {% if type == "tv" %}
+            <input type="number" name="season" value="{{ item.guess.season or '' }}" placeholder="S">
+            <input type="number" name="episode" value="{{ item.guess.episode or '' }}" placeholder="E">
+            {% endif %}
+            <button type="submit">Grab</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% elif query %}
+<div class="panel empty-state">
+  <div class="glyph">&mdash;</div>
+  <p>No releases found for &ldquo;{{ query }}&rdquo;.</p>
+</div>
+{% endif %}
 {% endblock %}

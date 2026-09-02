@@ -31,9 +31,16 @@ async def grab(
         torrent_hash = qbit.add_torrent(download_url, category)
     except Exception as exc:  # noqa: BLE001 - surface any qBittorrent failure to the user
         return HTMLResponse(
-            "<p>Failed to add torrent to qBittorrent: "
-            f"{exc}</p><p>Check QBIT_HOST/QBIT_USER/QBIT_PASS.</p>"
-            "<p><a href='/search'>Back to search</a></p>",
+            "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+            "<title>Failed to add torrent — Skald</title>"
+            "<link rel='stylesheet' href='/static/style.css'></head>"
+            "<body><div class='shell'><main class='error-page'>"
+            "<div class='glyph'>&times;</div>"
+            "<h1>Failed to add torrent</h1>"
+            f"<p><code>{exc}</code></p>"
+            "<p>Check QBIT_HOST/QBIT_USER/QBIT_PASS.</p>"
+            "<a class='btn' href='/search'>Back to search</a>"
+            "</main></div></body></html>",
             status_code=502,
         )
 

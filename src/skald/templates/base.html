@@ -1,8 +1,28 @@
 <!DOCTYPE html>
-<html>
-<head><title>Skald</title></head>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Skald{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
 <body>
-  <nav><a href="/search">Search</a> | <a href="/jobs">Jobs</a></nav>
-  {% block content %}{% endblock %}
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/search">
+        <span class="brand-mark">SK</span>
+        <span>SKALD</span>
+      </a>
+      <nav class="main-nav">
+        <a href="/search" class="{% if request.url.path.startswith('/search') %}active{% endif %}">Search</a>
+        <a href="/jobs" class="{% if request.url.path.startswith('/jobs') %}active{% endif %}">Jobs</a>
+      </nav>
+    </div>
+  </header>
+  <div class="shell">
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
 </body>
 </html>

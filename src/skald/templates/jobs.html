@@ -1,18 +1,53 @@
 {% extends "base.html" %}
+{% block title %}Jobs — Skald{% endblock %}
 {% block content %}
-<h1>Jobs</h1>
-<table>
-  <thead><tr><th>ID</th><th>Type</th><th>Title</th><th>Status</th><th>Progress</th></tr></thead>
-  <tbody>
-    {% for job in jobs %}
-    <tr>
-      <td><a href="/jobs/{{ job.id }}">{{ job.id }}</a></td>
-      <td>{{ job.type }}</td>
-      <td>{{ job.title }}</td>
-      <td>{{ job.status }}</td>
-      <td>{{ (job.progress * 100) | round(1) }}%</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="page-head">
+  <div>
+    <h1>Jobs<span class="accent-dot">.</span></h1>
+    <p class="page-sub">Everything grabbed, downloading, or waiting on you.</p>
+  </div>
+</div>
+
+{% if jobs %}
+<div class="panel table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Type</th>
+        <th>Title</th>
+        <th>Status</th>
+        <th>Progress</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td><span class="job-id">#{{ job.id }}</span></td>
+        <td class="cell-muted">{{ job.type.value }}</td>
+        <td><a class="job-link" href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
+        <td>
+          <span class="badge badge-{{ job.status.value }}">
+            <span class="badge-dot"></span>{{ job.status.value.replace('_', ' ') }}
+          </span>
+        </td>
+        <td>
+          <div class="progress-cell">
+            <div class="progress-track">
+              <div class="progress-fill" style="width: {{ (job.progress * 100) | round(1) }}%"></div>
+            </div>
+            <span class="progress-pct">{{ (job.progress * 100) | round(0) | int }}%</span>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel empty-state">
+  <div class="glyph">&mdash;</div>
+  <p>No jobs yet. Grab something from <a class="job-link" href="/search">search</a> to get started.</p>
+</div>
+{% endif %}
 {% endblock %}

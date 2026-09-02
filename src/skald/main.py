@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from sqlmodel import SQLModel
 
 from skald.config import get_settings
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
         task.cancel()
 
     app = FastAPI(lifespan=lifespan)
+    app.mount("/static", StaticFiles(directory="src/skald/static"), name="static")
     app.include_router(search_router)
     app.include_router(jobs_router)
     return app
