@@ -1,4 +1,5 @@
 import asyncio
+from html import unescape
 from types import SimpleNamespace
 
 import pytest
@@ -195,6 +196,30 @@ def test_job_detail_websocket_streams_status(tmp_path, monkeypatch):
         assert f'data-job-id="{job_id}"' in detail_response.text
         assert 'data-job-status="downloading"' in detail_response.text
         assert "job_status.js" in detail_response.text
+
+
+def test_job_detail_without_year_shows_only_em_dash_in_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "no-year.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.MOVIE,
+                title="Untitled Date",
+                release_title="Untitled.Date",
+                qbit_hash="fakehash",
+                category="skald-movie",
+            )
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+
+        detail_response = client.get(f"/jobs/{job.id}")
+
+    assert detail_response.status_code == 200
+    assert '<div class="k">Year</div>' not in detail_response.text
+    assert "—" in unescape(detail_response.text)
 
 
 def test_active_jobs_websocket_streams_changed_snapshot(tmp_path, monkeypatch):

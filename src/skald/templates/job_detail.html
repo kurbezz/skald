@@ -34,8 +34,12 @@
     <div class="v">{{ job.type.value }}</div>
   </div>
   <div class="detail-field">
+    {% if job.year %}
     <div class="k">Year</div>
-    <div class="v">{{ job.year or '&mdash;' }}</div>
+    <div class="v">{{ job.year }}</div>
+    {% else %}
+    <div class="v">&mdash;</div>
+    {% endif %}
   </div>
   {% if job.type.value == "tv" %}
   <div class="detail-field">
