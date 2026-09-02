@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Search</h1>
+<form method="get" action="/search">
+  <input type="text" name="q" value="{{ query }}">
+  <select name="type">
+    <option value="movie" {% if type == "movie" %}selected{% endif %}>Movie</option>
+    <option value="tv" {% if type == "tv" %}selected{% endif %}>TV</option>
+  </select>
+  <button type="submit">Search</button>
+</form>
+<table>
+  <thead>
+    <tr><th>Release</th><th>Indexer</th><th>Size</th><th>Seeders</th><th>Confirm &amp; Grab</th></tr>
+  </thead>
+  <tbody>
+    {% for item in results %}
+    <tr>
+      <td>{{ item.release.title }}</td>
+      <td>{{ item.release.indexer }}</td>
+      <td>{{ (item.release.size_bytes / 1073741824) | round(2) }} GB</td>
+      <td>{{ item.release.seeders }}</td>
+      <td>
+        <form method="post" action="/grab">
+          <input type="hidden" name="release_title" value="{{ item.release.title }}">
+          <input type="hidden" name="download_url" value="{{ item.release.download_url }}">
+          <input type="hidden" name="media_type" value="{{ type }}">
+          <input type="text" name="title" value="{{ item.guess.title or '' }}" placeholder="Title">
+          <input type="number" name="year" value="{{ item.guess.year or '' }}" placeholder="Year">
+          {% if type == "tv" %}
+          <input type="number" name="season" value="{{ item.guess.season or '' }}" placeholder="Season">
+          <input type="number" name="episode" value="{{ item.guess.episode or '' }}" placeholder="Episode">
+          {% endif %}
+          <button type="submit">Grab</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

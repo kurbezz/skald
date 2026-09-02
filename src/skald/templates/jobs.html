@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Jobs</h1>
+<table>
+  <thead><tr><th>ID</th><th>Type</th><th>Title</th><th>Status</th><th>Progress</th></tr></thead>
+  <tbody>
+    {% for job in jobs %}
+    <tr>
+      <td><a href="/jobs/{{ job.id }}">{{ job.id }}</a></td>
+      <td>{{ job.type }}</td>
+      <td>{{ job.title }}</td>
+      <td>{{ job.status }}</td>
+      <td>{{ (job.progress * 100) | round(1) }}%</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

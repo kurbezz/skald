@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Job {{ job.id }}: {{ job.title }}</h1>
+<p>Status: {{ job.status }}</p>
+{% if job.error_message %}<p style="color: red">{{ job.error_message }}</p>{% endif %}
+{% if job.status == "needs_attention" %}
+<form method="post" action="/jobs/{{ job.id }}/retry">
+  <input type="text" name="title" value="{{ job.title }}">
+  <input type="number" name="year" value="{{ job.year or '' }}">
+  {% if job.type == "tv" %}
+  <input type="number" name="season" value="{{ job.season or '' }}">
+  <input type="number" name="episode" value="{{ job.episode or '' }}">
+  {% endif %}
+  <button type="submit">Retry Organize</button>
+</form>
+{% endif %}
+{% endblock %}
