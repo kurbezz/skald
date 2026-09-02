@@ -86,6 +86,7 @@ def organize_job(session: Session, job: MediaJob, movies_root: str, tv_root: str
         session.commit()
         return
 
+    job.library_path = str(target)
     job.status = JobStatus.ORGANIZED
     session.add(job)
     session.commit()

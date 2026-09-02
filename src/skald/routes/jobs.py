@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Form, Request
@@ -7,6 +8,7 @@ from sqlmodel import select
 
 from skald.db import get_session
 from skald.models import JobStatus, MediaJob, MediaType
+from skald.organizer import remove_organized_file
 
 router = APIRouter()
 templates = Jinja2Templates(directory="src/skald/templates")
@@ -100,6 +102,8 @@ async def delete_job(request: Request, job_id: int):
                 status_code=502,
             )
 
+        if job.library_path:
+            remove_organized_file(Path(job.library_path))
         session.delete(job)
         session.commit()
 

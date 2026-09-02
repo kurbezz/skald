@@ -1,7 +1,9 @@
 from fastapi.testclient import TestClient
+from sqlmodel import Session
 
 from skald.indexer.base import ReleaseResult
 from skald.main import create_app
+from skald.models import JobStatus, MediaJob, MediaType
 
 
 class FakeIndexer:
@@ -125,6 +127,40 @@ def test_delete_job_removes_it(tmp_path, monkeypatch):
         assert response.headers["location"] == "/jobs"
         jobs_response = client.get("/jobs")
         assert "The Matrix" not in jobs_response.text
+
+
+def test_delete_job_removes_organized_library_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test-organized.db"))
+    app = create_app()
+    library_file = tmp_path / "library" / "Movie (2020)" / "Movie (2020).mkv"
+    library_file.parent.mkdir(parents=True)
+    library_file.write_text("data")
+
+    with TestClient(app) as client:
+        app.state.qbit = FakeQbit()
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.MOVIE,
+                title="Movie",
+                year=2020,
+                release_title="Movie.2020",
+                qbit_hash="fakehash",
+                category="skald-movie",
+                status=JobStatus.ORGANIZED,
+                library_path=str(library_file),
+            )
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            job_id = job.id
+
+        response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+
+        assert response.status_code == 303
+        assert not library_file.exists()
+        assert not library_file.parent.exists()
+        jobs_response = client.get("/jobs")
+        assert "Movie" not in jobs_response.text
 
 
 def test_delete_job_surfaces_qbittorrent_failure(tmp_path, monkeypatch):

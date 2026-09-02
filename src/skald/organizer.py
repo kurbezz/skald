@@ -34,3 +34,16 @@ def link_file(source: Path, target: Path) -> None:
         os.link(source, target)
     except OSError:
         shutil.copy2(source, target)
+
+
+def remove_organized_file(path: Path) -> None:
+    """Remove an organized library file and its parent folder if it's now empty."""
+    if not path.exists():
+        return
+    path.unlink()
+    parent = path.parent
+    try:
+        if parent.exists() and not any(parent.iterdir()):
+            parent.rmdir()
+    except OSError:
+        pass

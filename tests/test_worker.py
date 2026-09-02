@@ -72,6 +72,9 @@ async def test_poll_once_organizes_completed_movie(tmp_path):
     with Session(engine) as session:
         refreshed = session.exec(select(MediaJob)).first()
         assert refreshed.status == JobStatus.ORGANIZED
+        assert refreshed.library_path == str(
+            movies_root / "The Matrix (1999)" / "The Matrix (1999).mkv"
+        )
 
     target = movies_root / "The Matrix (1999)" / "The Matrix (1999).mkv"
     assert target.exists()
@@ -104,6 +107,10 @@ async def test_poll_once_organizes_completed_tv_episode(tmp_path):
 
     target = tv_root / "Breaking Bad" / "Season 01" / "Breaking Bad - S01E05.mkv"
     assert target.exists()
+
+    with Session(engine) as session:
+        refreshed = session.exec(select(MediaJob)).first()
+        assert refreshed.library_path == str(target)
 
 
 async def test_poll_once_needs_attention_when_no_video_files(tmp_path):

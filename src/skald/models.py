@@ -37,6 +37,7 @@ class MediaJob(SQLModel, table=True):
     status: JobStatus = Field(default=JobStatus.QUEUED)
     error_message: Optional[str] = None
     content_path: Optional[str] = None
+    library_path: Optional[str] = None
     progress: float = Field(default=0.0)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)

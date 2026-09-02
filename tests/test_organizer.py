@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from skald.organizer import find_video_files, link_file, movie_target_path, tv_target_path
+from skald.organizer import (
+    find_video_files,
+    link_file,
+    movie_target_path,
+    remove_organized_file,
+    tv_target_path,
+)
 
 
 def test_movie_target_path():
@@ -52,3 +58,32 @@ def test_link_file_raises_if_target_exists(tmp_path):
 
     with pytest.raises(FileExistsError):
         link_file(source, target)
+
+
+def test_remove_organized_file_removes_empty_parent(tmp_path):
+    organized_file = tmp_path / "Movie (2020)" / "Movie (2020).mkv"
+    organized_file.parent.mkdir()
+    organized_file.write_text("data")
+
+    remove_organized_file(organized_file)
+
+    assert not organized_file.exists()
+    assert not organized_file.parent.exists()
+
+
+def test_remove_organized_file_keeps_nonempty_parent(tmp_path):
+    organized_file = tmp_path / "Movie (2020)" / "Movie (2020).mkv"
+    organized_file.parent.mkdir()
+    organized_file.write_text("data")
+    other_file = organized_file.parent / "extras.mkv"
+    other_file.write_text("data")
+
+    remove_organized_file(organized_file)
+
+    assert not organized_file.exists()
+    assert organized_file.parent.exists()
+    assert other_file.exists()
+
+
+def test_remove_organized_file_ignores_missing_path(tmp_path):
+    remove_organized_file(tmp_path / "missing" / "Movie (2020).mkv")

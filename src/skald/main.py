@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlmodel import SQLModel
 
 from skald.config import get_settings
-from skald.db import get_engine, get_session
+from skald.db import get_engine, get_session, migrate_schema
 from skald.indexer.torznab import TorznabIndexer
 from skald.qbittorrent import QbittorrentClient
 from skald.routes.jobs import router as jobs_router
@@ -21,6 +21,7 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         SQLModel.metadata.create_all(engine)
+        migrate_schema(engine)
 
         app.state.settings = settings
         app.state.engine = engine
