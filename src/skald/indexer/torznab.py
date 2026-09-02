@@ -7,8 +7,19 @@ from skald.indexer.base import IndexerClient, ReleaseResult
 TORZNAB_NS = "{http://torznab.com/schemas/2015/feed}"
 
 
+class TorznabError(RuntimeError):
+    """Raised when the indexer proxy returns a Torznab <error> response
+    (e.g. invalid API key) instead of search results."""
+
+
 def parse_torznab_xml(xml_text: str) -> list[ReleaseResult]:
     root = ElementTree.fromstring(xml_text)
+
+    if root.tag == "error":
+        code = root.get("code", "unknown")
+        description = root.get("description", "no description")
+        raise TorznabError(f"Indexer returned error {code}: {description}")
+
     results = []
     for item in root.iter("item"):
         title = item.findtext("title") or ""
@@ -19,7 +30,9 @@ def parse_torznab_xml(xml_text: str) -> list[ReleaseResult]:
 
         seeders = 0
         leechers = 0
-        indexer_name = "unknown"
+        # Jackett reports the source tracker via <jackettindexer>; Prowlarr
+        # (and Torznab-spec-strict servers) use a torznab:attr instead.
+        indexer_name = item.findtext("jackettindexer") or "unknown"
         for attr in item.findall(f"{TORZNAB_NS}attr"):
             name = attr.get("name")
             value = attr.get("value")

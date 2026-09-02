@@ -1,0 +1,24 @@
+(N) 2026-09-02T07:35:29 - qBittorrent v5.2.3 started. Process ID: 155
+(N) 2026-09-02T07:35:29 - Using config directory: /config/qBittorrent
+(N) 2026-09-02T07:35:29 - Trying to listen on the following list of IP addresses: "0.0.0.0:6881,[::]:6881"
+(I) 2026-09-02T07:35:29 - Peer ID: "-qB5230-"
+(I) 2026-09-02T07:35:29 - HTTP User-Agent: "qBittorrent/5.2.3"
+(I) 2026-09-02T07:35:29 - Distributed Hash Table (DHT) support: ON
+(I) 2026-09-02T07:35:29 - Local Peer Discovery support: ON
+(I) 2026-09-02T07:35:29 - Peer Exchange (PeX) support: ON
+(I) 2026-09-02T07:35:29 - Anonymous mode: OFF
+(I) 2026-09-02T07:35:29 - Encryption support: ON
+(I) 2026-09-02T07:35:29 - Successfully listening on IP. IP: "127.0.0.1". Port: "TCP/6881"
+(I) 2026-09-02T07:35:29 - Successfully listening on IP. IP: "127.0.0.1". Port: "UTP/6881"
+(I) 2026-09-02T07:35:29 - Successfully listening on IP. IP: "192.168.107.3". Port: "TCP/6881"
+(I) 2026-09-02T07:35:29 - Successfully listening on IP. IP: "192.168.107.3". Port: "UTP/6881"
+(I) 2026-09-02T07:35:29 - Successfully listening on IP. IP: "::1". Port: "TCP/6881"
+(I) 2026-09-02T07:35:29 - Successfully listening on IP. IP: "::1". Port: "UTP/6881"
+(W) 2026-09-02T07:35:29 - Couldn't load IP geolocation database. Reason: No such file or directory
+(N) 2026-09-02T07:35:29 - Using built-in WebUI.
+(W) 2026-09-02T07:35:29 - Couldn't load WebUI translation for selected locale (C).
+(N) 2026-09-02T07:35:29 - WebUI: Now listening on IP: *, port: 8080
+(I) 2026-09-02T07:35:29 - Detected external IP. IP: "188.246.48.141"
+(I) 2026-09-02T07:35:30 - IP geolocation database loaded. Type: DBIP-Country-Lite. Build time: Tue Sep 1 01:32:45 2026.
+(I) 2026-09-02T07:35:30 - Successfully updated IP geolocation database.
+(W) 2026-09-02T07:42:19 - WebAPI login failure. Reason: invalid credentials, attempt count: 1, IP: ::ffff:192.168.107.4, username: admin

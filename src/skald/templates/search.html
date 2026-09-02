@@ -9,6 +9,7 @@
   </select>
   <button type="submit">Search</button>
 </form>
+{% if error %}<p style="color: red">{{ error }}</p>{% endif %}
 <table>
   <thead>
     <tr><th>Release</th><th>Indexer</th><th>Size</th><th>Seeders</th><th>Confirm &amp; Grab</th></tr>
