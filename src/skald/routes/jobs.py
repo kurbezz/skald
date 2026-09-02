@@ -27,6 +27,34 @@ COMPLETED_TAB_STATUSES = (
 )
 
 
+def active_jobs_payload(engine) -> dict:
+    with get_session(engine) as session:
+        all_jobs = session.exec(select(MediaJob).order_by(MediaJob.created_at.desc())).all()
+
+    active_jobs = [job for job in all_jobs if job.status in ACTIVE_TAB_STATUSES]
+    completed_count = sum(job.status in COMPLETED_TAB_STATUSES for job in all_jobs)
+    return {
+        "jobs": [
+            {
+                "id": job.id,
+                "type": job.type.value,
+                "title": job.title,
+                "status": job.status.value,
+                "progress": job.progress,
+            }
+            for job in active_jobs
+        ],
+        "completed_count": completed_count,
+    }
+
+
+async def wait_for_websocket_disconnect(websocket: WebSocket) -> None:
+    while True:
+        message = await websocket.receive()
+        if message["type"] == "websocket.disconnect":
+            return
+
+
 @router.post("/grab")
 async def grab(
     request: Request,
@@ -140,6 +168,28 @@ async def job_detail(request: Request, job_id: int):
     with get_session(request.app.state.engine) as session:
         job = session.get(MediaJob, job_id)
     return templates.TemplateResponse(request, "job_detail.html", {"job": job})
+
+
+@router.websocket("/ws/jobs/active")
+async def active_jobs_ws(websocket: WebSocket):
+    await websocket.accept()
+    last_payload = None
+    disconnect_task = asyncio.create_task(wait_for_websocket_disconnect(websocket))
+    try:
+        while not disconnect_task.done():
+            payload = active_jobs_payload(websocket.app.state.engine)
+            if payload != last_payload:
+                await websocket.send_json(payload)
+                last_payload = payload
+            await asyncio.wait((disconnect_task,), timeout=2)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        disconnect_task.cancel()
+        try:
+            await disconnect_task
+        except asyncio.CancelledError:
+            pass
 
 
 @router.websocket("/ws/jobs/{job_id}")

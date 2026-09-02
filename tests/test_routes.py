@@ -1,3 +1,6 @@
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
@@ -6,6 +9,7 @@ from starlette.testclient import WebSocketDenialResponse
 from skald.indexer.base import ReleaseResult
 from skald.main import create_app
 from skald.models import JobStatus, MediaJob, MediaType
+from skald.routes import jobs as jobs_routes
 
 
 class FakeIndexer:
@@ -75,10 +79,18 @@ def test_search_grab_and_jobs_pages(tmp_path, monkeypatch):
         active_response = client.get("/jobs?tab=active")
         assert active_response.status_code == 200
         assert "The Matrix" in active_response.text
+        assert 'data-active-jobs' in active_response.text
+        assert 'data-active-job-list' in active_response.text
+        assert 'data-active-job-template' in active_response.text
+        assert 'data-active-count' in active_response.text
+        assert 'data-completed-count' in active_response.text
+        assert 'active_jobs.js' in active_response.text
 
         completed_response = client.get("/jobs?tab=completed")
         assert completed_response.status_code == 200
         assert "The Matrix" not in completed_response.text
+        assert 'data-active-jobs' not in completed_response.text
+        assert 'active_jobs.js' not in completed_response.text
 
 
 def test_root_redirects_to_jobs(tmp_path, monkeypatch):
@@ -183,6 +195,84 @@ def test_job_detail_websocket_streams_status(tmp_path, monkeypatch):
         assert f'data-job-id="{job_id}"' in detail_response.text
         assert 'data-job-status="downloading"' in detail_response.text
         assert "job_status.js" in detail_response.text
+
+
+def test_active_jobs_websocket_streams_changed_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "active-ws.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.MOVIE,
+                title="Active WS Movie",
+                year=2020,
+                release_title="Active.WS.Movie.2020",
+                qbit_hash="fakehash",
+                category="skald-movie",
+                status=JobStatus.DOWNLOADING,
+                progress=0.25,
+            )
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            job_id = job.id
+
+        with client.websocket_connect("/ws/jobs/active") as websocket:
+            initial = websocket.receive_json()
+            assert initial == {
+                "jobs": [
+                    {
+                        "id": job_id,
+                        "type": "movie",
+                        "title": "Active WS Movie",
+                        "status": "downloading",
+                        "progress": 0.25,
+                    }
+                ],
+                "completed_count": 0,
+            }
+
+            with Session(app.state.engine) as session:
+                changed = session.get(MediaJob, job_id)
+                changed.status = JobStatus.ORGANIZED
+                session.add(changed)
+                session.commit()
+
+            assert websocket.receive_json() == {"jobs": [], "completed_count": 1}
+
+
+async def test_active_jobs_websocket_stops_polling_after_disconnect(monkeypatch):
+    class DisconnectingWebSocket:
+        def __init__(self):
+            self.app = SimpleNamespace(state=SimpleNamespace(engine=object()))
+            self.disconnect = asyncio.Event()
+            self.receive_started = asyncio.Event()
+            self.payloads = []
+
+        async def accept(self):
+            pass
+
+        async def send_json(self, payload):
+            self.payloads.append(payload)
+            self.disconnect.set()
+
+        async def receive(self):
+            self.receive_started.set()
+            await self.disconnect.wait()
+            return {"type": "websocket.disconnect"}
+
+    monkeypatch.setattr(
+        jobs_routes,
+        "active_jobs_payload",
+        lambda engine: {"jobs": [], "completed_count": 0},
+    )
+    websocket = DisconnectingWebSocket()
+
+    await asyncio.wait_for(jobs_routes.active_jobs_ws(websocket), timeout=0.1)
+
+    assert websocket.receive_started.is_set()
+    assert websocket.payloads == [{"jobs": [], "completed_count": 0}]
 
 
 def test_grab_surfaces_qbittorrent_failure(tmp_path, monkeypatch):

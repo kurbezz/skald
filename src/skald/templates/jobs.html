@@ -10,13 +10,91 @@
 
 <div class="tab-bar">
   <a href="/jobs?tab=active" class="tab-link {% if tab == 'active' %}active{% endif %}">
-    Active <span class="tab-count">{{ active_count }}</span>
+    Active <span class="tab-count" {% if tab == "active" %}data-active-count aria-label="{{ active_count }} active jobs"{% endif %}>{{ active_count }}</span>
   </a>
   <a href="/jobs?tab=completed" class="tab-link {% if tab == 'completed' %}active{% endif %}">
-    Completed <span class="tab-count">{{ completed_count }}</span>
+    Completed <span class="tab-count" {% if tab == "active" %}data-completed-count aria-label="{{ completed_count }} completed jobs"{% endif %}>{{ completed_count }}</span>
   </a>
 </div>
 
+{% if tab == "active" %}
+<section data-active-jobs data-ws-url="/ws/jobs/active">
+  <div class="panel table-wrap" data-active-table {% if not jobs %}hidden{% endif %}>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Type</th>
+          <th>Title</th>
+          <th>Status</th>
+          <th>Progress</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody data-active-job-list>
+        {% for job in jobs %}
+        <tr data-job-row data-job-id="{{ job.id }}" data-job-status="{{ job.status.value }}">
+          <td><span class="job-id" data-job-id-label>#{{ job.id }}</span></td>
+          <td class="cell-muted" data-job-type>{{ job.type.value }}</td>
+          <td><a class="job-link" data-job-title href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
+          <td>
+            <span class="badge badge-{{ job.status.value }}" data-job-status-badge>
+              <span class="badge-dot" aria-hidden="true"></span><span data-job-status-label>{{ job.status.value.replace('_', ' ') }}</span>
+            </span>
+          </td>
+          <td>
+            <div class="progress-cell" data-job-progress role="progressbar" aria-label="{{ job.title }} download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ (job.progress * 100) | round(0) | int }}" aria-valuetext="{{ (job.progress * 100) | round(0) | int }}%">
+              <div class="progress-track" aria-hidden="true">
+                <div class="progress-fill" data-job-progress-fill style="width: {{ (job.progress * 100) | round(1) }}%"></div>
+              </div>
+              <span class="progress-pct" data-job-progress-text aria-hidden="true">{{ (job.progress * 100) | round(0) | int }}%</span>
+            </div>
+          </td>
+          <td>
+            <form method="post" data-job-delete-form action="/jobs/{{ job.id }}/delete" onsubmit="return confirm('Delete this job and its torrent + files from qBittorrent? This cannot be undone.');">
+              <button type="submit" class="btn-danger">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel empty-state" data-active-empty {% if jobs %}hidden{% endif %}>
+    <div class="glyph">&mdash;</div>
+    <p>No active downloads. Grab something from <a class="job-link" href="/search">search</a> to get started.</p>
+  </div>
+
+  <p class="visually-hidden" data-active-jobs-live role="status" aria-live="polite" aria-atomic="true"></p>
+
+  <template data-active-job-template>
+    <tr data-job-row>
+      <td><span class="job-id" data-job-id-label></span></td>
+      <td class="cell-muted" data-job-type></td>
+      <td><a class="job-link" data-job-title></a></td>
+      <td>
+        <span class="badge" data-job-status-badge>
+          <span class="badge-dot" aria-hidden="true"></span><span data-job-status-label></span>
+        </span>
+      </td>
+      <td>
+        <div class="progress-cell" data-job-progress role="progressbar" aria-valuemin="0" aria-valuemax="100">
+          <div class="progress-track" aria-hidden="true">
+            <div class="progress-fill" data-job-progress-fill></div>
+          </div>
+          <span class="progress-pct" data-job-progress-text aria-hidden="true"></span>
+        </div>
+      </td>
+      <td>
+        <form method="post" data-job-delete-form onsubmit="return confirm('Delete this job and its torrent + files from qBittorrent? This cannot be undone.');">
+          <button type="submit" class="btn-danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+  </template>
+</section>
+{% else %}
 {% if jobs %}
 <div class="panel table-wrap">
   <table>
@@ -62,11 +140,11 @@
 {% else %}
 <div class="panel empty-state">
   <div class="glyph">&mdash;</div>
-  {% if tab == "active" %}
-  <p>No active downloads. Grab something from <a class="job-link" href="/search">search</a> to get started.</p>
-  {% else %}
   <p>Nothing completed yet.</p>
-  {% endif %}
 </div>
 {% endif %}
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{% if tab == "active" %}<script type="module" src="/static/active_jobs.js"></script>{% endif %}
 {% endblock %}
