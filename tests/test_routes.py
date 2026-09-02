@@ -98,9 +98,43 @@ def test_routes_require_auth_when_configured(tmp_path, monkeypatch):
     app = create_app()
 
     with TestClient(app) as client:
-        assert client.get("/jobs").status_code == 401
-        assert client.get("/jobs", auth=("wronguser", "wrongpass")).status_code == 401
-        assert client.get("/jobs", auth=("testuser", "testpass")).status_code == 200
+        # No session cookie -> redirected to /login.
+        no_cookie_response = client.get("/jobs", follow_redirects=False)
+        assert no_cookie_response.status_code == 303
+        assert no_cookie_response.headers["location"].startswith("/login")
+
+        # Following redirects with no cookie lands on the login page HTML.
+        followed = client.get("/jobs", follow_redirects=True)
+        assert followed.status_code == 200
+        assert "Log in" in followed.text
+
+        # Wrong credentials -> redirected back to /login with an error, no cookie set.
+        wrong_login = client.post(
+            "/login",
+            data={"username": "wronguser", "password": "wrongpass", "next": "/jobs"},
+            follow_redirects=False,
+        )
+        assert wrong_login.status_code == 303
+        assert wrong_login.headers["location"].startswith("/login?error=1")
+        assert "session" not in wrong_login.cookies
+
+        # Correct credentials -> session cookie set and redirected to `next`.
+        login_response = client.post(
+            "/login",
+            data={"username": "testuser", "password": "testpass", "next": "/jobs"},
+            follow_redirects=False,
+        )
+        assert login_response.status_code == 303
+        assert login_response.headers["location"] == "/jobs"
+        assert "session" in login_response.cookies
+
+        # Subsequent requests carry the session cookie automatically via the client jar.
+        authenticated_response = client.get("/jobs")
+        assert authenticated_response.status_code == 200
+
+        # Logout clears the cookie and further requests are redirected again.
+        client.get("/logout")
+        assert client.get("/jobs", follow_redirects=False).status_code == 303
 
 
 def test_job_websocket_requires_auth_when_configured(tmp_path, monkeypatch):
@@ -114,7 +148,7 @@ def test_job_websocket_requires_auth_when_configured(tmp_path, monkeypatch):
             with client.websocket_connect("/ws/jobs/1"):
                 pass
 
-    assert exc_info.value.status_code == 401
+    assert exc_info.value.status_code == 303
 
 
 def test_job_detail_websocket_streams_status(tmp_path, monkeypatch):

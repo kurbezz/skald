@@ -269,6 +269,7 @@ h1 .accent-dot {
 
 input[type="text"],
 input[type="number"],
+input[type="password"],
 select {
   font-family: var(--font-body);
   font-size: 14px;
@@ -283,6 +284,7 @@ select {
 
 input[type="text"]:focus,
 input[type="number"]:focus,
+input[type="password"]:focus,
 select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
@@ -696,6 +698,82 @@ a.job-link:hover {
   display: inline-block;
   margin-top: 20px;
   text-decoration: none;
+}
+
+/* ---------- login page ---------- */
+
+.login-wrap {
+  display: flex;
+  justify-content: center;
+  padding-top: 64px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 340px;
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.06em;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.login-sub {
+  margin: 0 0 18px;
+}
+
+.login-label {
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin: 10px 0 6px;
+}
+
+.login-card input[type="text"],
+.login-card input[type="password"] {
+  width: 100%;
+}
+
+.login-submit {
+  width: 100%;
+  margin-top: 22px;
+  padding: 11px 16px;
+}
+
+/* ---------- topbar logout ---------- */
+
+.topbar-spacer {
+  flex: 1;
+}
+
+a.logout-link {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  text-decoration: none;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+a.logout-link:hover {
+  color: var(--text);
+  background: var(--surface-2);
 }
 
 @media (max-width: 640px) {

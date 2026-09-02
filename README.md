@@ -31,9 +31,23 @@ qBittorrent instance's Web UI address (reachable from the container).
 
 ## Authentication
 
-Set both `AUTH_USERNAME` and `AUTH_PASSWORD` to enable HTTP Basic Auth for
-the whole app except `/static`. Leave them empty (the default) to disable
-authentication entirely.
+Set both `AUTH_USERNAME` and `AUTH_PASSWORD` to require login for the whole
+app except `/static`. Leave them empty (the default) to disable
+authentication entirely — in that case `/login` just redirects to `/jobs`.
+
+When enabled, unauthenticated requests are redirected to a `/login` page.
+A successful login sets a signed, `httponly` session cookie (`session`)
+valid for 30 days; `/logout` clears it.
+
+The cookie is signed with `SECRET_KEY`. If you don't set it, a random key
+is generated every time the app starts, which means **every restart logs
+everyone out**. For a longer-lived session across restarts/deploys, set
+`SECRET_KEY` to a fixed random value (e.g. `python -c "import secrets;
+print(secrets.token_hex(32))"`) in your `.env`.
+
+The session cookie is not marked `secure`, since this app is commonly
+self-hosted over plain HTTP on a LAN. If you put it behind an HTTPS
+reverse proxy, consider adding `secure=True` in `src/skald/routes/auth.py`.
 
 ## Docker Compose (full local stack for testing)
 

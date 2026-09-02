@@ -11,6 +11,7 @@ from skald.config import get_settings
 from skald.db import get_engine, get_session, migrate_schema
 from skald.indexer.torznab import TorznabIndexer
 from skald.qbittorrent import QbittorrentClient
+from skald.routes.auth import router as auth_router
 from skald.routes.jobs import router as jobs_router
 from skald.routes.search import router as search_router
 from skald.worker import worker_loop
@@ -46,6 +47,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
     app.mount("/static", StaticFiles(directory="src/skald/static"), name="static")
+    app.include_router(auth_router)
     app.include_router(search_router, dependencies=[Depends(require_auth)])
     app.include_router(jobs_router, dependencies=[Depends(require_auth)])
 

@@ -13,10 +13,16 @@
         <span class="brand-mark">SK</span>
         <span>SKALD</span>
       </a>
+      {% if request.url.path != "/login" %}
       <nav class="main-nav">
         <a href="/search" class="{% if request.url.path.startswith('/search') %}active{% endif %}">Search</a>
         <a href="/jobs" class="{% if request.url.path.startswith('/jobs') %}active{% endif %}">Jobs</a>
       </nav>
+      {% endif %}
+      <div class="topbar-spacer"></div>
+      {% if request.url.path != "/login" %}
+      <a href="/logout" class="logout-link">Log out</a>
+      {% endif %}
     </div>
   </header>
   <div class="shell">

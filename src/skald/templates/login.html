@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Log in — Skald{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <form method="post" action="/login" class="panel login-card">
+    <div class="login-brand">
+      <span class="brand-mark">SK</span>
+      <span>SKALD</span>
+    </div>
+    <p class="page-sub login-sub">Sign in to continue.</p>
+
+    {% if error %}<div class="alert alert-error">Invalid username or password</div>{% endif %}
+
+    <input type="hidden" name="next" value="{{ next }}">
+    <label class="login-label" for="username">Username</label>
+    <input type="text" id="username" name="username" autocomplete="username" autofocus required>
+
+    <label class="login-label" for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" required>
+
+    <button type="submit" class="login-submit">Log in</button>
+  </form>
+</div>
+{% endblock %}
