@@ -1,4 +1,5 @@
 import asyncio
+import re
 from html import unescape
 from types import SimpleNamespace
 
@@ -25,6 +26,36 @@ class FakeIndexer:
                 leechers=1,
                 download_url="magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
             )
+        ]
+
+
+class MultiResultIndexer:
+    async def search(self, query: str) -> list[ReleaseResult]:
+        return [
+            ReleaseResult(
+                title="Seeder.High.2024.1080p",
+                indexer="fake",
+                size_bytes=2_000_000_000,
+                seeders=20,
+                leechers=2,
+                download_url="magnet:?xt=urn:btih:1111111111111111111111111111111111111111",
+            ),
+            ReleaseResult(
+                title="Leecher.High.2024.1080p",
+                indexer="fake",
+                size_bytes=3_000_000_000,
+                seeders=5,
+                leechers=30,
+                download_url="magnet:?xt=urn:btih:2222222222222222222222222222222222222222",
+            ),
+            ReleaseResult(
+                title="Middle.Peers.2024.1080p",
+                indexer="fake",
+                size_bytes=1_000_000_000,
+                seeders=10,
+                leechers=10,
+                download_url="magnet:?xt=urn:btih:3333333333333333333333333333333333333333",
+            ),
         ]
 
 
@@ -93,6 +124,145 @@ def test_search_grab_and_jobs_pages(tmp_path, monkeypatch):
         assert "The Matrix" not in completed_response.text
         assert 'data-active-jobs' not in completed_response.text
         assert 'active_jobs.js' not in completed_response.text
+
+
+@pytest.mark.parametrize(
+    ("params", "expected_titles"),
+    [
+        ({}, ["Seeder.High", "Middle.Peers", "Leecher.High"]),
+        ({"sort": "seeders", "direction": "asc"}, ["Leecher.High", "Middle.Peers", "Seeder.High"]),
+        ({"sort": "leechers", "direction": "desc"}, ["Leecher.High", "Middle.Peers", "Seeder.High"]),
+        ({"sort": "leechers", "direction": "asc"}, ["Seeder.High", "Middle.Peers", "Leecher.High"]),
+        (
+            {"sort": "size_bytes", "direction": "desc"},
+            ["Leecher.High", "Seeder.High", "Middle.Peers"],
+        ),
+        (
+            {"sort": "size_bytes", "direction": "asc"},
+            ["Middle.Peers", "Seeder.High", "Leecher.High"],
+        ),
+        ({"sort": "unknown", "direction": "up"}, ["Seeder.High", "Middle.Peers", "Leecher.High"]),
+        pytest.param(
+            {"sort": "invalid", "direction": "asc"},
+            ["Seeder.High", "Middle.Peers", "Leecher.High"],
+            id="invalid-sort-with-valid-direction-defaults",
+        ),
+        pytest.param(
+            {"sort": "leechers", "direction": "invalid"},
+            ["Seeder.High", "Middle.Peers", "Leecher.High"],
+            id="valid-sort-with-invalid-direction-defaults",
+        ),
+    ],
+)
+def test_search_sorts_peers(tmp_path, monkeypatch, params, expected_titles):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "search_sort.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.indexer = MultiResultIndexer()
+        response = client.get("/search", params={"q": "matrix", "type": "movie", **params})
+
+    assert response.status_code == 200
+    positions = [response.text.index(title) for title in expected_titles]
+    assert positions == sorted(positions)
+
+
+def test_search_renders_sort_links(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "search_sort_links.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.indexer = MultiResultIndexer()
+        response = client.get("/search", params={"q": "matrix", "type": "movie"})
+
+    assert response.status_code == 200
+    assert 'href="/search?q=matrix&amp;type=movie&amp;sort=seeders&amp;direction=asc"' in response.text
+    assert 'href="/search?q=matrix&amp;type=movie&amp;sort=leechers&amp;direction=desc"' in response.text
+    assert 'href="/search?q=matrix&amp;type=movie&amp;sort=size_bytes&amp;direction=desc"' in response.text
+
+
+@pytest.mark.parametrize(
+    ("params", "expected_aria_sort"),
+    [
+        pytest.param({}, "descending", id="default-seeders-descending"),
+        pytest.param(
+            {"sort": "seeders", "direction": "asc"},
+            "ascending",
+            id="seeders-ascending",
+        ),
+    ],
+)
+def test_search_renders_active_sort_header_aria(tmp_path, monkeypatch, params, expected_aria_sort):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "search_sort_header_aria.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.indexer = MultiResultIndexer()
+        response = client.get("/search", params={"q": "matrix", "type": "movie", **params})
+
+    assert response.status_code == 200
+    seeders_header = re.search(
+        r"<th\b[^>]*>\s*<a\b[^>]*>[^<]*Seeders(?:[^<]|<(?!/th\b))*</th>",
+        response.text,
+        re.DOTALL,
+    )
+    leechers_header = re.search(
+        r"<th\b[^>]*>\s*<a\b[^>]*>[^<]*Leechers(?:[^<]|<(?!/th\b))*</th>",
+        response.text,
+        re.DOTALL,
+    )
+    assert seeders_header is not None
+    assert leechers_header is not None
+    assert f'aria-sort="{expected_aria_sort}"' in seeders_header.group()
+    assert "aria-sort" not in leechers_header.group()
+
+
+@pytest.mark.parametrize(
+    ("params", "expected_aria_sort", "expected_next_direction"),
+    [
+        pytest.param(
+            {"sort": "size_bytes", "direction": "desc"},
+            "descending",
+            "asc",
+            id="size-descending",
+        ),
+        pytest.param(
+            {"sort": "size_bytes", "direction": "asc"},
+            "ascending",
+            "desc",
+            id="size-ascending",
+        ),
+    ],
+)
+def test_search_renders_active_size_sort_header_aria(
+    tmp_path, monkeypatch, params, expected_aria_sort, expected_next_direction
+):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "search_size_header_aria.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.indexer = MultiResultIndexer()
+        response = client.get("/search", params={"q": "matrix", "type": "movie", **params})
+
+    assert response.status_code == 200
+    size_header = re.search(
+        r"<th\b[^>]*>\s*<a\b[^>]*>[^<]*Size(?:[^<]|<(?!/th\b))*</th>",
+        response.text,
+        re.DOTALL,
+    )
+    seeders_header = re.search(
+        r"<th\b[^>]*>\s*<a\b[^>]*>[^<]*Seeders(?:[^<]|<(?!/th\b))*</th>",
+        response.text,
+        re.DOTALL,
+    )
+    assert size_header is not None
+    assert seeders_header is not None
+    assert f'aria-sort="{expected_aria_sort}"' in size_header.group()
+    assert "aria-sort" not in seeders_header.group()
+    assert (
+        f'href="/search?q=matrix&amp;type=movie&amp;sort=size_bytes&amp;direction={expected_next_direction}"'
+        in size_header.group()
+    )
 
 
 def test_root_redirects_to_jobs(tmp_path, monkeypatch):

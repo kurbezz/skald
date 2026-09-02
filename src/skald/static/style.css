@@ -375,6 +375,21 @@ thead th {
   border-bottom: 1px solid var(--border);
 }
 
+.sort-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.sort-link:hover,
+.sort-link:focus-visible {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.sort-link.is-active {
+  color: var(--accent-strong);
+}
+
 tbody td {
   padding: 14px 16px;
   border-bottom: 1px solid var(--border-soft);

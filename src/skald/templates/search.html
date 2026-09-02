@@ -26,8 +26,27 @@
       <tr>
         <th>Release</th>
         <th>Indexer</th>
-        <th>Size</th>
-        <th>Peers</th>
+        <th scope="col"{% if sort == 'size_bytes' %} aria-sort="{% if direction == 'asc' %}ascending{% else %}descending{% endif %}"{% endif %}>
+          <a class="sort-link {% if sort == 'size_bytes' %}is-active{% endif %}"
+             href="/search?q={{ query | urlencode }}&amp;type={{ type }}&amp;sort=size_bytes&amp;direction={% if sort == 'size_bytes' and direction == 'desc' %}asc{% else %}desc{% endif %}"
+             aria-label="Sort by size {% if sort == 'size_bytes' and direction == 'desc' %}ascending{% else %}descending{% endif %}">
+             Size{% if sort == 'size_bytes' %} <span aria-hidden="true">{% if direction == 'asc' %}↑{% else %}↓{% endif %}</span>{% endif %}
+          </a>
+        </th>
+        <th scope="col"{% if sort == 'seeders' %} aria-sort="{% if direction == 'asc' %}ascending{% else %}descending{% endif %}"{% endif %}>
+          <a class="sort-link {% if sort == 'seeders' %}is-active{% endif %}"
+             href="/search?q={{ query | urlencode }}&amp;type={{ type }}&amp;sort=seeders&amp;direction={% if sort == 'seeders' and direction == 'desc' %}asc{% else %}desc{% endif %}"
+             aria-label="Sort by seeders {% if sort == 'seeders' and direction == 'desc' %}ascending{% else %}descending{% endif %}">
+            Seeders{% if sort == 'seeders' %} <span aria-hidden="true">{% if direction == 'asc' %}↑{% else %}↓{% endif %}</span>{% endif %}
+          </a>
+        </th>
+        <th scope="col"{% if sort == 'leechers' %} aria-sort="{% if direction == 'asc' %}ascending{% else %}descending{% endif %}"{% endif %}>
+          <a class="sort-link {% if sort == 'leechers' %}is-active{% endif %}"
+             href="/search?q={{ query | urlencode }}&amp;type={{ type }}&amp;sort=leechers&amp;direction={% if sort == 'leechers' and direction == 'desc' %}asc{% else %}desc{% endif %}"
+             aria-label="Sort by leechers {% if sort == 'leechers' and direction == 'desc' %}ascending{% else %}descending{% endif %}">
+            Leechers{% if sort == 'leechers' %} <span aria-hidden="true">{% if direction == 'asc' %}↑{% else %}↓{% endif %}</span>{% endif %}
+          </a>
+        </th>
         <th>Confirm &amp; Grab</th>
       </tr>
     </thead>
@@ -37,10 +56,8 @@
         <td><span class="release-title">{{ item.release.title }}</span></td>
         <td class="cell-muted">{{ item.release.indexer }}</td>
         <td class="cell-muted">{{ (item.release.size_bytes / 1073741824) | round(2) }} GB</td>
-        <td>
-          <span class="seeders">&#9650;{{ item.release.seeders }}</span>
-          <span class="leechers">&#9660;{{ item.release.leechers }}</span>
-        </td>
+        <td><span class="seeders">&#9650;{{ item.release.seeders }}</span></td>
+        <td><span class="leechers">&#9660;{{ item.release.leechers }}</span></td>
         <td>
           <form method="post" action="/grab" class="grab-form">
             <input type="hidden" name="release_title" value="{{ item.release.title }}">
