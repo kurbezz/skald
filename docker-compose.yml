@@ -1,0 +1,56 @@
+services:
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - WEBUI_PORT=8080
+    volumes:
+      - ./data/qbittorrent/config:/config
+      - ./data/downloads:/downloads
+    ports:
+      - "8080:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
+    restart: unless-stopped
+
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - ./data/jackett/config:/config
+    ports:
+      - "9117:9117"
+    restart: unless-stopped
+
+  skald:
+    build: .
+    depends_on:
+      - qbittorrent
+      - jackett
+    environment:
+      # Fixed by compose network topology - service names resolve via Docker DNS.
+      - JACKETT_URL=http://jackett:9117
+      - QBIT_HOST=http://qbittorrent:8080
+      # User-configurable secrets, override via a top-level .env file.
+      - JACKETT_API_KEY=${JACKETT_API_KEY:-changeme}
+      - QBIT_USER=${QBIT_USER:-admin}
+      - QBIT_PASS=${QBIT_PASS:-adminadmin}
+      - MOVIES_LIBRARY_PATH=/library/movies
+      - TV_LIBRARY_PATH=/library/tv
+      - DB_PATH=/data/skald.db
+    volumes:
+      # Same host path as qbittorrent's /downloads so qBittorrent's reported
+      # content_path resolves inside the skald container too. Movies/library
+      # are a separate mount, so organizer.py falls back to copy (not
+      # hardlink) across the mount boundary - fine for local testing.
+      - ./data/downloads:/downloads
+      - ./data/library:/library
+      - ./data/skald:/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
