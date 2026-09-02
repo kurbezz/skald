@@ -45,7 +45,13 @@ class QbittorrentClient:
         self._client.auth_log_in()
         magnet_hash = extract_hash_from_magnet(download_url)
         if magnet_hash:
-            self._client.torrents_add(urls=download_url, category=category)
+            try:
+                self._client.torrents_add(urls=download_url, category=category)
+            except qbittorrentapi.exceptions.Conflict409Error:
+                # Torrent with this hash already exists in qBittorrent (e.g.
+                # the user grabbed it before) - not an error, we already
+                # know its hash from the magnet URI itself.
+                pass
             return magnet_hash
 
         before = {t.hash for t in self._client.torrents_info(category=category)}

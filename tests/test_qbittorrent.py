@@ -1,3 +1,5 @@
+import qbittorrentapi
+
 from skald.qbittorrent import QbittorrentClient, extract_hash_from_magnet
 
 
@@ -38,6 +40,14 @@ class FakeQbitApi:
         return list(self.torrents)
 
 
+class ConflictQbitApi(FakeQbitApi):
+    """Simulates qBittorrent rejecting a duplicate torrent with 409."""
+
+    def torrents_add(self, urls, category):
+        self.added.append((urls, category))
+        raise qbittorrentapi.exceptions.Conflict409Error("Conflict")
+
+
 def test_add_torrent_extracts_hash_from_magnet():
     fake = FakeQbitApi()
     client = QbittorrentClient(
@@ -51,6 +61,19 @@ def test_add_torrent_extracts_hash_from_magnet():
     assert torrent_hash == "aabbccddeeff00112233445566778899aabbccdd"
     assert fake.logged_in
     assert fake.added == [(magnet, "skald-movie")]
+
+
+def test_add_torrent_magnet_ignores_conflict_for_duplicate():
+    fake = ConflictQbitApi()
+    client = QbittorrentClient(
+        host="http://localhost:8080", username="admin", password="pw",
+        client_factory=lambda: fake,
+    )
+    magnet = "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD&dn=Test"
+
+    torrent_hash = client.add_torrent(magnet, category="skald-movie")
+
+    assert torrent_hash == "aabbccddeeff00112233445566778899aabbccdd"
 
 
 def test_add_torrent_falls_back_to_diff_for_non_magnet():

@@ -27,7 +27,15 @@ async def grab(
     qbit = request.app.state.qbit
     category = settings.category_movie if media_type == "movie" else settings.category_tv
 
-    torrent_hash = qbit.add_torrent(download_url, category)
+    try:
+        torrent_hash = qbit.add_torrent(download_url, category)
+    except Exception as exc:  # noqa: BLE001 - surface any qBittorrent failure to the user
+        return HTMLResponse(
+            "<p>Failed to add torrent to qBittorrent: "
+            f"{exc}</p><p>Check QBIT_HOST/QBIT_USER/QBIT_PASS.</p>"
+            "<p><a href='/search'>Back to search</a></p>",
+            status_code=502,
+        )
 
     with get_session(request.app.state.engine) as session:
         job = MediaJob(
