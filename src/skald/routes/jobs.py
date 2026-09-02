@@ -74,17 +74,16 @@ async def grab(
     try:
         torrent_hash = qbit.add_torrent(download_url, category)
     except Exception as exc:  # noqa: BLE001 - surface any qBittorrent failure to the user
-        return HTMLResponse(
-            "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
-            "<title>Failed to add torrent — Skald</title>"
-            "<link rel='stylesheet' href='/static/style.css'></head>"
-            "<body><div class='shell'><main class='error-page'>"
-            "<div class='glyph'>&times;</div>"
-            "<h1>Failed to add torrent</h1>"
-            f"<p><code>{exc}</code></p>"
-            "<p>Check QBIT_HOST/QBIT_USER/QBIT_PASS.</p>"
-            "<a class='btn' href='/search'>Back to search</a>"
-            "</main></div></body></html>",
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {
+                "title": "Failed to add torrent",
+                "detail": str(exc),
+                "hint": "Check QBIT_HOST/QBIT_USER/QBIT_PASS.",
+                "back_url": "/search",
+                "back_label": "Back to search",
+            },
             status_code=502,
         )
 
@@ -106,17 +105,16 @@ async def grab(
     return RedirectResponse(url="/jobs", status_code=303)
 
 
-def _error_page(title: str, detail: str, status_code: int) -> HTMLResponse:
-    return HTMLResponse(
-        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
-        f"<title>{title} — Skald</title>"
-        "<link rel='stylesheet' href='/static/style.css'></head>"
-        "<body><div class='shell'><main class='error-page'>"
-        "<div class='glyph'>&times;</div>"
-        f"<h1>{title}</h1>"
-        f"<p><code>{detail}</code></p>"
-        "<a class='btn' href='/jobs'>Back to jobs</a>"
-        "</main></div></body></html>",
+def _error_page(request: Request, title: str, detail: str, status_code: int) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "error.html",
+        {
+            "title": title,
+            "detail": detail,
+            "back_url": "/jobs",
+            "back_label": "Back to jobs",
+        },
         status_code=status_code,
     )
 
@@ -140,15 +138,15 @@ async def delete_job(request: Request, job_id: int):
         if outcome == DeletionOutcome.LIBRARY_FAILURE:
             current = session.get(MediaJob, job_id)
             detail = current.error_message if current else "failed to remove library file"
-            return _error_page("Failed to delete library file", detail, 500)
+            return _error_page(request, "Failed to delete library file", detail, 500)
         if outcome == DeletionOutcome.QBIT_FAILURE:
             current = session.get(MediaJob, job_id)
             detail = current.error_message if current else "failed to delete torrent"
-            return _error_page("Failed to delete torrent", detail, 502)
+            return _error_page(request, "Failed to delete torrent", detail, 502)
         if outcome == DeletionOutcome.NEEDS_ATTENTION:
             current = session.get(MediaJob, job_id)
             detail = current.error_message if current else "ownership conflict"
-            return _error_page("Delete blocked: ownership conflict", detail, 500)
+            return _error_page(request, "Delete blocked: ownership conflict", detail, 500)
 
     return RedirectResponse(url="/jobs", status_code=303)
 

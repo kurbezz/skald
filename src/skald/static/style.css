@@ -42,6 +42,12 @@
   box-sizing: border-box;
 }
 
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
 html,
 body {
   height: 100%;
@@ -413,27 +419,27 @@ tbody tr:hover {
 .grab-form {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
 }
 
 .grab-form input[type="text"],
 .grab-form input[type="number"] {
-  padding: 7px 9px;
+  padding: 8px 10px;
   font-size: 13px;
 }
 
 .grab-form input[name="title"] {
-  width: 150px;
+  width: 168px;
 }
 
 .grab-form input[name="year"] {
-  width: 68px;
+  width: 72px;
 }
 
 .grab-form input[name="season"],
 .grab-form input[name="episode"] {
-  width: 60px;
+  width: 56px;
 }
 
 .grab-form button {
@@ -566,6 +572,11 @@ a.job-link:hover {
   text-align: right;
 }
 
+.detail-progress {
+  max-width: 360px;
+  margin-bottom: 20px;
+}
+
 /* ---------- job detail page ---------- */
 
 .detail-head {
@@ -577,8 +588,8 @@ a.job-link:hover {
 }
 
 .detail-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 1px;
   background: var(--border-soft);
   border: 1px solid var(--border);
@@ -590,6 +601,12 @@ a.job-link:hover {
 .detail-field {
   background: var(--surface);
   padding: 14px 18px;
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.detail-field--wide {
+  flex: 1 1 100%;
 }
 
 .detail-field .k {
@@ -675,7 +692,8 @@ a.job-link:hover {
 
 .error-page {
   max-width: 560px;
-  margin: 80px auto 0;
+  margin: 64px auto 0;
+  padding: 40px 32px;
   text-align: center;
 }
 

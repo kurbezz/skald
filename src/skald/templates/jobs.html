@@ -120,12 +120,16 @@
           </span>
         </td>
         <td>
+          {% if job.status.value == "downloading" %}
           <div class="progress-cell">
             <div class="progress-track">
               <div class="progress-fill" style="width: {{ (job.progress * 100) | round(1) }}%"></div>
             </div>
             <span class="progress-pct">{{ (job.progress * 100) | round(0) | int }}%</span>
           </div>
+          {% else %}
+          <span class="cell-muted">&mdash;</span>
+          {% endif %}
         </td>
         <td>
           <form method="post" action="/jobs/{{ job.id }}/delete" onsubmit="return confirm('Delete this job and its torrent + files from qBittorrent? This cannot be undone.');">

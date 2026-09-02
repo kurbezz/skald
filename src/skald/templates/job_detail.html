@@ -12,7 +12,7 @@
 </div>
 
 {% if job.status.value == "downloading" %}
-<div class="progress-cell" style="max-width: 360px; margin-bottom: 20px;">
+<div class="progress-cell detail-progress">
   <div class="progress-track">
     <div class="progress-fill" style="width: {{ (job.progress * 100) | round(1) }}%"></div>
   </div>
@@ -55,12 +55,12 @@
     <div class="k">Created</div>
     <div class="v">{{ job.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
   </div>
-  <div class="detail-field" style="grid-column: 1 / -1;">
+  <div class="detail-field detail-field--wide">
     <div class="k">Release</div>
     <div class="v release-title">{{ job.release_title }}</div>
   </div>
   {% if job.content_path %}
-  <div class="detail-field" style="grid-column: 1 / -1;">
+  <div class="detail-field detail-field--wide">
     <div class="k">Content Path</div>
     <div class="v release-title">{{ job.content_path }}</div>
   </div>

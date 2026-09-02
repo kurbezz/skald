@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — Skald{% endblock %}
+{% block content %}
+<div class="panel error-page">
+  <div class="glyph">&times;</div>
+  <h1>{{ title }}</h1>
+  <p><code>{{ detail }}</code></p>
+  {% if hint %}<p>{{ hint }}</p>{% endif %}
+  <a class="btn" href="{{ back_url }}">{{ back_label }}</a>
+</div>
+{% endblock %}
