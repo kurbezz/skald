@@ -1,5 +1,4 @@
 import asyncio
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Form, Request, WebSocket, WebSocketDisconnect
@@ -8,8 +7,9 @@ from fastapi.templating import Jinja2Templates
 from sqlmodel import select
 
 from skald.db import get_session
-from skald.models import JobStatus, MediaJob, MediaType
-from skald.organizer import remove_organized_file
+from skald.lifecycle import try_job_lock
+from skald.models import JobStatus, MediaJob, MediaType, OrganizedFile
+from skald.worker import DeletionOutcome, reconcile_deleting_job, request_job_deletion
 
 router = APIRouter()
 templates = Jinja2Templates(directory="src/skald/templates")
@@ -19,6 +19,7 @@ ACTIVE_TAB_STATUSES = (
     JobStatus.DOWNLOADING,
     JobStatus.COMPLETED,
     JobStatus.ORGANIZING,
+    JobStatus.DELETING,
 )
 COMPLETED_TAB_STATUSES = (
     JobStatus.ORGANIZED,
@@ -105,36 +106,49 @@ async def grab(
     return RedirectResponse(url="/jobs", status_code=303)
 
 
+def _error_page(title: str, detail: str, status_code: int) -> HTMLResponse:
+    return HTMLResponse(
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+        f"<title>{title} — Skald</title>"
+        "<link rel='stylesheet' href='/static/style.css'></head>"
+        "<body><div class='shell'><main class='error-page'>"
+        "<div class='glyph'>&times;</div>"
+        f"<h1>{title}</h1>"
+        f"<p><code>{detail}</code></p>"
+        "<a class='btn' href='/jobs'>Back to jobs</a>"
+        "</main></div></body></html>",
+        status_code=status_code,
+    )
+
+
 @router.post("/jobs/{job_id}/delete")
 async def delete_job(request: Request, job_id: int):
     qbit = request.app.state.qbit
 
     with get_session(request.app.state.engine) as session:
-        job = session.get(MediaJob, job_id)
+        # Commit durable DELETING intent (and, for pack jobs, a fresh
+        # delete token plus delete_requested ledger rows) before any
+        # filesystem or qBittorrent side effect. Idempotent: a job already
+        # DELETING (e.g. a retried delete click) is simply re-read so this
+        # request can retry the same operation.
+        job = request_job_deletion(session, job_id)
         if job is None:
             return RedirectResponse(url="/jobs", status_code=303)
 
-        try:
-            qbit.delete_torrent(job.qbit_hash, delete_files=True)
-        except Exception as exc:  # noqa: BLE001 - surface any qBittorrent failure to the user
-            return HTMLResponse(
-                "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
-                "<title>Failed to delete torrent — Skald</title>"
-                "<link rel='stylesheet' href='/static/style.css'></head>"
-                "<body><div class='shell'><main class='error-page'>"
-                "<div class='glyph'>&times;</div>"
-                "<h1>Failed to delete torrent</h1>"
-                f"<p><code>{exc}</code></p>"
-                "<p>Check QBIT_HOST/QBIT_USER/QBIT_PASS.</p>"
-                "<a class='btn' href='/jobs'>Back to jobs</a>"
-                "</main></div></body></html>",
-                status_code=502,
-            )
+        outcome = reconcile_deleting_job(session, job, qbit)
 
-        if job.library_path:
-            remove_organized_file(Path(job.library_path))
-        session.delete(job)
-        session.commit()
+        if outcome == DeletionOutcome.LIBRARY_FAILURE:
+            current = session.get(MediaJob, job_id)
+            detail = current.error_message if current else "failed to remove library file"
+            return _error_page("Failed to delete library file", detail, 500)
+        if outcome == DeletionOutcome.QBIT_FAILURE:
+            current = session.get(MediaJob, job_id)
+            detail = current.error_message if current else "failed to delete torrent"
+            return _error_page("Failed to delete torrent", detail, 502)
+        if outcome == DeletionOutcome.NEEDS_ATTENTION:
+            current = session.get(MediaJob, job_id)
+            detail = current.error_message if current else "ownership conflict"
+            return _error_page("Delete blocked: ownership conflict", detail, 500)
 
     return RedirectResponse(url="/jobs", status_code=303)
 
@@ -231,13 +245,27 @@ async def retry_job(
     episode: Optional[int] = Form(None),
 ):
     with get_session(request.app.state.engine) as session:
-        job = session.get(MediaJob, job_id)
-        job.title = title
-        job.year = year
-        job.season = season
-        job.episode = episode
-        job.status = JobStatus.COMPLETED
-        job.error_message = None
-        session.add(job)
-        session.commit()
+        with try_job_lock(job_id) as acquired:
+            if not acquired:
+                return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+            job = session.get(MediaJob, job_id)
+            if job is None:
+                return RedirectResponse(url="/jobs", status_code=303)
+            if job.status == JobStatus.DELETING:
+                # Never destroy durable delete intent with a retry write.
+                return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+            job.title = title
+            job.year = year
+            job.season = season
+            job.episode = episode
+            has_residual_pack_ledger = (
+                job.type == MediaType.TV
+                and session.exec(
+                    select(OrganizedFile).where(OrganizedFile.job_id == job.id)
+                ).first() is not None
+            )
+            job.status = JobStatus.ORGANIZING if has_residual_pack_ledger else JobStatus.COMPLETED
+            job.error_message = None
+            session.add(job)
+            session.commit()
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)

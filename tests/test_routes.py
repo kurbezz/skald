@@ -4,12 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 from starlette.testclient import WebSocketDenialResponse
 
 from skald.indexer.base import ReleaseResult
+from skald.lifecycle import file_identity
 from skald.main import create_app
-from skald.models import JobStatus, MediaJob, MediaType
+from skald.models import FileLifecycle, JobStatus, MediaJob, MediaType, OrganizationMode, OrganizedFile
 from skald.routes import jobs as jobs_routes
 
 
@@ -384,6 +385,216 @@ def test_delete_job_removes_organized_library_file(tmp_path, monkeypatch):
         assert "Movie" not in jobs_response.text
 
 
+def test_delete_job_removes_all_recorded_pack_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "pack-delete.db"))
+    app = create_app()
+    season = tmp_path / "library" / "Show" / "Season 01"
+    created = [season / "Show - S01E01.mkv", season / "Show - S01E02.mkv"]
+    preserved = season / "Show - S01E03.mkv"
+    season.mkdir(parents=True)
+    for path in [*created, preserved]:
+        path.write_text("data")
+
+    with TestClient(app) as client:
+        app.state.qbit = FakeQbit()
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.TV,
+                title="Show",
+                release_title="Show.S01",
+                qbit_hash="hash",
+                category="skald-tv",
+                status=JobStatus.ORGANIZED,
+                organization_mode=OrganizationMode.PACK,
+                operation_token="organize-token",
+            )
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            job_id = job.id
+            for path in created:
+                identity = file_identity(path)
+                session.add(OrganizedFile(
+                    job_id=job.id, path=str(path), lifecycle=FileLifecycle.PUBLISHED,
+                    operation_token="organize-token",
+                    published_device=identity.device, published_inode=identity.inode,
+                ))
+            session.commit()
+
+        response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert not any(path.exists() for path in created)
+    assert preserved.exists()
+
+
+def test_scalar_delete_commits_deleting_before_library_side_effect(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "delete-intent.db"))
+    app = create_app()
+    library_file = tmp_path / "library" / "Movie.mkv"
+    library_file.parent.mkdir(parents=True)
+    library_file.write_text("data")
+    # Scalar deletion's filesystem removal happens inside
+    # worker.reconcile_deleting_job, not the route module itself.
+    import skald.worker as worker_module
+    original_remove = worker_module.remove_organized_file
+    qbit_calls = []
+
+    class RecordingQbit:
+        def delete_torrent(self, torrent_hash, delete_files=True):
+            qbit_calls.append(torrent_hash)
+
+    with TestClient(app) as client:
+        app.state.qbit = RecordingQbit()
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.MOVIE, title="Movie", year=2020,
+                release_title="Movie.2020", qbit_hash="hash", category="skald-movie",
+                status=JobStatus.ORGANIZED, library_path=str(library_file),
+            )
+            session.add(job)
+            session.commit()
+            job_id = job.id
+
+        def assert_deletion_intent(path):
+            with Session(app.state.engine) as verifier:
+                assert verifier.get(MediaJob, job_id).status == JobStatus.DELETING
+            original_remove(path)
+
+        monkeypatch.setattr("skald.worker.remove_organized_file", assert_deletion_intent)
+        response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert qbit_calls == ["hash"]
+
+
+def test_delete_job_retains_deleting_ledger_when_second_library_file_fails(tmp_path, monkeypatch):
+    """A pack row's owned-file cleanup uses identity-checked
+    `cleanup_owned_file` (not path-only removal); a cleanup error on one row
+    must retain `DELETING` and the entire ledger for retry, and must never
+    reach qBittorrent.
+    """
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "delete-library-failure.db"))
+    app = create_app()
+    paths = [tmp_path / "library" / f"Show - S01E{episode:02d}.mkv" for episode in range(1, 3)]
+    paths[0].parent.mkdir(parents=True)
+    for path in paths:
+        path.write_text("data")
+    import skald.worker as worker_module
+    original_cleanup = worker_module.cleanup_owned_file
+    qbit_calls = []
+
+    class RecordingQbit:
+        def delete_torrent(self, torrent_hash, delete_files=True):
+            qbit_calls.append(torrent_hash)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        app.state.qbit = RecordingQbit()
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.TV, title="Show", release_title="Show.S01",
+                qbit_hash="hash", category="skald-tv", status=JobStatus.ORGANIZED,
+                organization_mode=OrganizationMode.PACK, operation_token="organize-token",
+            )
+            session.add(job)
+            session.commit()
+            for path in paths:
+                identity = file_identity(path)
+                session.add(OrganizedFile(
+                    job_id=job.id, path=str(path), lifecycle=FileLifecycle.PUBLISHED,
+                    operation_token="organize-token",
+                    published_device=identity.device, published_inode=identity.inode,
+                ))
+            session.commit()
+            job_id = job.id
+
+        def fail_second_cleanup(path, identity):
+            if path == paths[1]:
+                from skald.organizer import CleanupOutcome
+                return CleanupOutcome(removed=False, foreign=False, error="permission denied")
+            return original_cleanup(path, identity)
+
+        monkeypatch.setattr("skald.worker.cleanup_owned_file", fail_second_cleanup)
+        response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+
+    assert response.status_code == 500
+    assert qbit_calls == []
+    with Session(app.state.engine) as session:
+        job = session.get(MediaJob, job_id)
+        assert job.status == JobStatus.DELETING
+        assert "Delete pending:" in job.error_message
+        assert {row.path for row in session.exec(select(OrganizedFile)).all()} == {str(path) for path in paths}
+
+
+def test_delete_job_retains_deleting_ledger_when_qbittorrent_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "delete-qbit-failure.db"))
+    app = create_app()
+    library_file = tmp_path / "library" / "Show - S01E01.mkv"
+    library_file.parent.mkdir(parents=True)
+    library_file.write_text("data")
+
+    with TestClient(app) as client:
+        app.state.qbit = FailingQbit()
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.TV, title="Show", release_title="Show.S01",
+                qbit_hash="hash", category="skald-tv", status=JobStatus.ORGANIZED,
+                organization_mode=OrganizationMode.PACK, operation_token="organize-token",
+            )
+            session.add(job)
+            session.commit()
+            identity = file_identity(library_file)
+            session.add(OrganizedFile(
+                job_id=job.id, path=str(library_file), lifecycle=FileLifecycle.PUBLISHED,
+                operation_token="organize-token",
+                published_device=identity.device, published_inode=identity.inode,
+            ))
+            session.commit()
+            job_id = job.id
+
+        response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+
+    assert response.status_code == 502
+    assert not library_file.exists()
+    with Session(app.state.engine) as session:
+        job = session.get(MediaJob, job_id)
+        assert job.status == JobStatus.DELETING
+        assert "Delete pending:" in job.error_message
+        assert [row.path for row in session.exec(select(OrganizedFile)).all()] == [str(library_file)]
+
+
+def test_retry_tv_pack_with_residual_ledger_commits_organizing_for_recovery(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "retry-pack.db"))
+    app = create_app()
+    residual = tmp_path / "library" / "Show" / "Season 01" / "Show - S01E01.mkv"
+    residual.parent.mkdir(parents=True)
+    residual.write_text("partial")
+
+    with TestClient(app) as client:
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.TV, title="Show", release_title="Show.S01",
+                qbit_hash="hash", category="skald-tv", status=JobStatus.NEEDS_ATTENTION,
+            )
+            session.add(job)
+            session.commit()
+            session.add(OrganizedFile(
+                job_id=job.id, path=str(residual), lifecycle=FileLifecycle.LEGACY_UNVERIFIED
+            ))
+            session.commit()
+            job_id = job.id
+
+        response = client.post(
+            f"/jobs/{job_id}/retry",
+            data={"title": "Show"},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        with Session(app.state.engine) as session:
+            assert session.get(MediaJob, job_id).status == JobStatus.ORGANIZING
+
+
 def test_delete_job_surfaces_qbittorrent_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "test4.db"))
     app = create_app()
@@ -408,3 +619,65 @@ def test_delete_job_surfaces_qbittorrent_failure(tmp_path, monkeypatch):
         assert "Failed to delete torrent" in response.text
         jobs_response = client.get("/jobs")
         assert "The Matrix" in jobs_response.text
+
+
+def test_fenced_delete_route_does_nothing_while_job_lock_is_held_elsewhere(tmp_path, monkeypatch):
+    """`/jobs/{id}/delete` must acquire the shared per-job lock before any
+    durable transition or side effect; a caller that cannot acquire the
+    lock performs no work and leaves the job for the lock holder to finish.
+    """
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "delete-lock-contention.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.qbit = FakeQbit()
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.MOVIE, title="Movie", year=2020,
+                release_title="Movie.2020", qbit_hash="hash", category="skald-movie",
+                status=JobStatus.ORGANIZED,
+            )
+            session.add(job)
+            session.commit()
+            job_id = job.id
+
+        from skald.lifecycle import try_job_lock
+
+        with try_job_lock(job_id) as held:
+            assert held
+            response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+
+        assert response.status_code == 303
+        with Session(app.state.engine) as session:
+            job = session.get(MediaJob, job_id)
+            # No commit happened while the lock was held elsewhere.
+            assert job.status == JobStatus.ORGANIZED
+
+
+def test_fenced_retry_route_does_nothing_while_job_lock_is_held_elsewhere(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "retry-lock-contention.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.MOVIE, title="Movie", year=2020,
+                release_title="Movie.2020", qbit_hash="hash", category="skald-movie",
+                status=JobStatus.NEEDS_ATTENTION,
+            )
+            session.add(job)
+            session.commit()
+            job_id = job.id
+
+        from skald.lifecycle import try_job_lock
+
+        with try_job_lock(job_id) as held:
+            assert held
+            response = client.post(
+                f"/jobs/{job_id}/retry", data={"title": "Movie"}, follow_redirects=False
+            )
+
+        assert response.status_code == 303
+        with Session(app.state.engine) as session:
+            job = session.get(MediaJob, job_id)
+            assert job.status == JobStatus.NEEDS_ATTENTION

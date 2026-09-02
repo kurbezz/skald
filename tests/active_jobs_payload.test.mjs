@@ -20,6 +20,15 @@ test("normalizes a valid active-jobs snapshot", () => {
   assert.deepEqual(normalizeActiveJobsSnapshot(payload), payload);
 });
 
+test("normalizes a deleting active-job snapshot", () => {
+  const payload = {
+    jobs: [{ id: 42, type: "movie", title: "Example Movie", status: "deleting", progress: 1 }],
+    completed_count: 7,
+  };
+
+  assert.deepEqual(normalizeActiveJobsSnapshot(payload), payload);
+});
+
 test("rejects a snapshot containing a malformed job", () => {
   assert.equal(
     normalizeActiveJobsSnapshot({

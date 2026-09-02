@@ -1,4 +1,4 @@
-const ACTIVE_STATUSES = new Set(["queued", "downloading", "completed", "organizing"]);
+const ACTIVE_STATUSES = new Set(["queued", "downloading", "completed", "organizing", "deleting"]);
 const MEDIA_TYPES = new Set(["movie", "tv"]);
 
 export function normalizeActiveJobsSnapshot(payload) {
