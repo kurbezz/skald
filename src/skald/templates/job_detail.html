@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Job {{ job.id }} — Skald{% endblock %}
 {% block content %}
-<div class="detail-head">
+<div class="detail-head" data-job-id="{{ job.id }}" data-job-status="{{ job.status.value }}">
   <h1>{{ job.title }}<span class="accent-dot">.</span></h1>
   <span class="badge badge-{{ job.status.value }}">
     <span class="badge-dot"></span>{{ job.status.value.replace('_', ' ') }}
@@ -85,4 +85,7 @@
   </form>
 </div>
 {% endif %}
+{% block scripts %}
+<script src="/static/job_status.js" defer></script>
+{% endblock %}
 {% endblock %}

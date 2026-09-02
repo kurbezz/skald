@@ -1,5 +1,7 @@
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
+from starlette.testclient import WebSocketDenialResponse
 
 from skald.indexer.base import ReleaseResult
 from skald.main import create_app
@@ -99,6 +101,54 @@ def test_routes_require_auth_when_configured(tmp_path, monkeypatch):
         assert client.get("/jobs").status_code == 401
         assert client.get("/jobs", auth=("wronguser", "wrongpass")).status_code == 401
         assert client.get("/jobs", auth=("testuser", "testpass")).status_code == 200
+
+
+def test_job_websocket_requires_auth_when_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "ws-auth.db"))
+    monkeypatch.setenv("AUTH_USERNAME", "testuser")
+    monkeypatch.setenv("AUTH_PASSWORD", "testpass")
+    app = create_app()
+
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDenialResponse) as exc_info:
+            with client.websocket_connect("/ws/jobs/1"):
+                pass
+
+    assert exc_info.value.status_code == 401
+
+
+def test_job_detail_websocket_streams_status(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "ws.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        app.state.qbit = FakeQbit()
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.MOVIE,
+                title="WS Movie",
+                year=2020,
+                release_title="WS.Movie.2020",
+                qbit_hash="fakehash",
+                category="skald-movie",
+                status=JobStatus.DOWNLOADING,
+                progress=0.25,
+            )
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            job_id = job.id
+
+        with client.websocket_connect(f"/ws/jobs/{job_id}") as websocket:
+            data = websocket.receive_json()
+            assert data["status"] == "downloading"
+            assert data["progress"] == 0.25
+
+        detail_response = client.get(f"/jobs/{job_id}")
+        assert detail_response.status_code == 200
+        assert f'data-job-id="{job_id}"' in detail_response.text
+        assert 'data-job-status="downloading"' in detail_response.text
+        assert "job_status.js" in detail_response.text
 
 
 def test_grab_surfaces_qbittorrent_failure(tmp_path, monkeypatch):

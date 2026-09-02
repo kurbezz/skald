@@ -3,13 +3,20 @@ from typing import Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from starlette.requests import HTTPConnection
 
 from skald.config import get_settings
 
 security = HTTPBasic(auto_error=False)
 
 
-def require_auth(credentials: Optional[HTTPBasicCredentials] = Depends(security)) -> None:
+async def get_credentials(connection: HTTPConnection) -> Optional[HTTPBasicCredentials]:
+    return await security(connection)
+
+
+def require_auth(
+    credentials: Optional[HTTPBasicCredentials] = Depends(get_credentials),
+) -> None:
     settings = get_settings()
     if not settings.auth_username or not settings.auth_password:
         return

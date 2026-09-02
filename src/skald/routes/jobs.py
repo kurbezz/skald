@@ -1,7 +1,8 @@
+import asyncio
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import select
@@ -139,6 +140,35 @@ async def job_detail(request: Request, job_id: int):
     with get_session(request.app.state.engine) as session:
         job = session.get(MediaJob, job_id)
     return templates.TemplateResponse(request, "job_detail.html", {"job": job})
+
+
+@router.websocket("/ws/jobs/{job_id}")
+async def job_status_ws(websocket: WebSocket, job_id: int):
+    await websocket.accept()
+    engine = websocket.app.state.engine
+    last_payload = None
+    terminal_statuses = (JobStatus.ORGANIZED, JobStatus.NEEDS_ATTENTION, JobStatus.FAILED)
+    try:
+        while True:
+            with get_session(engine) as session:
+                job = session.get(MediaJob, job_id)
+            if job is None:
+                await websocket.send_json({"status": "not_found"})
+                break
+            payload = {
+                "status": job.status.value,
+                "progress": job.progress,
+                "error_message": job.error_message,
+                "content_path": job.content_path,
+            }
+            if payload != last_payload:
+                await websocket.send_json(payload)
+                last_payload = payload
+                if job.status in terminal_statuses:
+                    break
+            await asyncio.sleep(2)
+    except WebSocketDisconnect:
+        pass
 
 
 @router.post("/jobs/{job_id}/retry")
