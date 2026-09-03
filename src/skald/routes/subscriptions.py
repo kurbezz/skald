@@ -11,6 +11,8 @@ from skald.models import (
     DownloadedQuality,
     MediaJob,
     MediaType,
+    NotificationDeliveryAttempt,
+    SubscriptionEvent,
     SubscriptionRelease,
     TvSubscriptionScope,
     _utcnow,
@@ -260,6 +262,15 @@ async def delete_subscription(request: Request, subscription_id: int):
             update(DownloadedQuality)
             .where(DownloadedQuality.subscription_id == subscription_id)
             .values(subscription_id=None)
+        )
+        event_ids = select(SubscriptionEvent.id).where(
+            SubscriptionEvent.subscription_id == subscription_id
+        )
+        session.execute(
+            delete(NotificationDeliveryAttempt).where(NotificationDeliveryAttempt.event_id.in_(event_ids))
+        )
+        session.execute(
+            delete(SubscriptionEvent).where(SubscriptionEvent.subscription_id == subscription_id)
         )
         session.execute(
             delete(SubscriptionRelease).where(SubscriptionRelease.subscription_id == subscription_id)

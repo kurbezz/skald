@@ -12,12 +12,16 @@ from skald.config import Settings
 from skald.main import create_app
 from skald.models import (
     DownloadedQuality,
+    NotificationChannel,
+    NotificationDeliveryAttempt,
     JobStatus,
     MediaJob,
     MediaSubscription,
     MediaType,
     SubscriptionRelease,
     SubscriptionReleaseScope,
+    SubscriptionEvent,
+    SubscriptionEventKind,
     TvSubscriptionScope,
 )
 from skald.qbittorrent import TorrentFile
@@ -862,6 +866,21 @@ def test_delete_subscription_keeps_sourced_job_and_baseline_after_clearing_refer
             quality_score=[4, 4, 5],
         )
         database_session.add(baseline)
+        event = SubscriptionEvent(
+            subscription_id=subscription.id,
+            subscription_release_id=release.id,
+            media_type=MediaType.MOVIE,
+            kind=SubscriptionEventKind.RELEASE_MATCH,
+            dedupe_key="release:delete-sourced-release",
+            title="New movie release",
+            body="The Matrix",
+        )
+        database_session.add(event)
+        database_session.commit()
+        database_session.add(NotificationDeliveryAttempt(
+            event_id=event.id,
+            channel=NotificationChannel.EMAIL,
+        ))
         database_session.commit()
         subscription_id, release_id, job_id, baseline_id = (
             subscription.id,
@@ -881,6 +900,8 @@ def test_delete_subscription_keeps_sourced_job_and_baseline_after_clearing_refer
         assert (job.source_subscription_id, job.source_subscription_release_id) == (None, None)
         assert baseline is not None
         assert (baseline.subscription_id, baseline.media_job_id) == (None, job_id)
+        assert database_session.exec(select(SubscriptionEvent)).all() == []
+        assert database_session.exec(select(NotificationDeliveryAttempt)).all() == []
 
 
 def test_tv_subscription_detail_and_season_routes(client, app, captured_templates):

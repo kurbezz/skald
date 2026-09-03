@@ -1,8 +1,11 @@
+import asyncio
 import hashlib
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
+import logging
+from typing import Protocol
 
 from sqlmodel import Session, select
 
@@ -18,12 +21,21 @@ from skald.models import (
 )
 from skald.episodes import serialize_episode_set
 from skald.parser import parse_release
-from skald.quality import best_matching_release, default_quality_profile
+from skald.quality import QualityCandidate, QualityProfileService
+from skald.routes.quality import get_or_create_profile
+from skald.services.events import create_release_match, create_upgrade_proposals
 from skald.services.grab import MediaJobCreationError, TorrentAdder, create_media_job
 
 Clock = datetime | Callable[[], datetime]
 ProfileProvider = Callable[[], QualityProfile | None]
 _AUTO_GRAB_FAILURE_PREFIX = "Automatic grab failed: "
+logger = logging.getLogger(__name__)
+
+
+class EventDelivery(Protocol):
+    """Delivers one committed event."""
+
+    def deliver_event(self, event_id: int) -> None: ...
 
 
 def release_fingerprint(subscription_id: int, release: ReleaseResult) -> str:
@@ -124,6 +136,35 @@ def _published_at(value: str | None) -> datetime | None:
         return None
 
 
+def target_keys_for_subscription_release(
+    subscription: MediaSubscription, parsed: Mapping[str, object]
+) -> list[str]:
+    """Return concrete, canonical baseline targets represented by one discovery."""
+    if subscription.type is MediaType.MOVIE:
+        return [f"movie:tmdb:{subscription.tmdb_id}"]
+    if subscription.type is not MediaType.TV:
+        return []
+    season = parsed.get("season")
+    if not isinstance(season, int) or isinstance(season, bool):
+        return []
+    raw_episodes = parsed.get("episode_set")
+    if not isinstance(raw_episodes, (list, tuple, set)):
+        return []
+    episodes = {
+        episode
+        for episode in raw_episodes
+        if isinstance(episode, int) and not isinstance(episode, bool) and episode > 0
+    }
+    if episodes:
+        return [
+            f"tv:tmdb:{subscription.tmdb_id}:season:{season}:episode:{episode}"
+            for episode in sorted(episodes)
+        ]
+    if raw_episodes:
+        return []
+    return [f"tv:tmdb:{subscription.tmdb_id}:season:{season}:pack"]
+
+
 async def scan_due_subscriptions(
     session: Session,
     indexer: IndexerClient,
@@ -131,6 +172,7 @@ async def scan_due_subscriptions(
     qbit: TorrentAdder | None = None,
     settings: Settings | None = None,
     profile_provider: ProfileProvider | None = None,
+    delivery_service: EventDelivery | None = None,
     interval_seconds: int,
     now: Clock,
 ) -> None:
@@ -145,8 +187,18 @@ async def scan_due_subscriptions(
     for subscription in due_subscriptions:
         subscription_id = subscription.id
         try:
+            retry_auto_grab = bool(
+                subscription.last_error
+                and subscription.last_error.startswith(_AUTO_GRAB_FAILURE_PREFIX)
+            )
             matching_results: list[ReleaseResult] = []
             newly_discovered_results: list[ReleaseResult] = []
+            candidates_by_fingerprint: dict[str, QualityCandidate] = {}
+            created_event_ids: list[int] = []
+            profile = profile_provider() if profile_provider is not None else None
+            if profile is None or profile.media_type is not subscription.type:
+                profile = get_or_create_profile(session, subscription.type)
+            profile_service = QualityProfileService()
             for release in await indexer.search(subscription_query(subscription)):
                 parsed = parse_release(release.title)
                 if parsed["media_type"] != subscription.type.value:
@@ -160,11 +212,16 @@ async def scan_due_subscriptions(
                         continue
                 matching_results.append(release)
                 fingerprint = release_fingerprint(subscription.id, release)
+                observed = profile_service.observed_from_parsed(parsed, release.size_bytes)
+                candidates_by_fingerprint[fingerprint] = QualityCandidate(
+                    release=release, fingerprint=fingerprint, observed=observed
+                )
                 stored_release = session.exec(
                     select(SubscriptionRelease).where(
                         SubscriptionRelease.fingerprint == fingerprint
                     )
                 ).first()
+                newly_inserted = stored_release is None
                 if stored_release is None:
                     stored_release = SubscriptionRelease(
                         subscription_id=subscription.id,
@@ -176,14 +233,45 @@ async def scan_due_subscriptions(
                         download_url=release.download_url,
                         published_at=_published_at(release.published_at),
                         fingerprint=fingerprint,
+                        resolution=observed.resolution,
+                        audio=observed.audio,
+                        hdr=observed.hdr,
                     )
                     session.add(stored_release)
                     session.flush()
                     newly_discovered_results.append(release)
                 if scopes:
                     _persist_release_scope_targets(session, stored_release, scopes)
-            # Persist every discovery before any external qBittorrent effect.
+                    session.flush()
+                if newly_inserted and profile_service.eligible(
+                    profile, observed, title=release.title, seeders=release.seeders
+                ):
+                    event = create_release_match(session, stored_release, subscription)
+                    if event is not None and event.id is not None:
+                        created_event_ids.append(event.id)
+                    for proposal in create_upgrade_proposals(
+                        session,
+                        stored_release,
+                        subscription,
+                        observed,
+                        target_keys_for_subscription_release(subscription, parsed),
+                    ):
+                        if proposal.id is not None:
+                            created_event_ids.append(proposal.id)
+            # Persist every discovery and event before any delivery or qBittorrent effect.
+            completed_at = now() if callable(now) else now
+            subscription.last_checked_at = completed_at
+            subscription.last_error = None
+            subscription.next_check_at = completed_at + timedelta(seconds=interval_seconds)
+            session.add(subscription)
             session.commit()
+
+            if delivery_service is not None:
+                for event_id in created_event_ids:
+                    try:
+                        await asyncio.to_thread(delivery_service.deliver_event, event_id)
+                    except Exception:  # noqa: BLE001 - delivery cannot affect committed discovery
+                        logger.exception("event delivery invocation failed for event %s", event_id)
 
             durable_subscription = session.get(
                 MediaSubscription, subscription_id, populate_existing=True
@@ -191,9 +279,7 @@ async def scan_due_subscriptions(
             if durable_subscription is None:
                 continue
             candidates = newly_discovered_results
-            if durable_subscription.last_error and durable_subscription.last_error.startswith(
-                _AUTO_GRAB_FAILURE_PREFIX
-            ):
+            if retry_auto_grab:
                 # A failed eligible discovery is retryable even though it is
                 # no longer new on the next indexer response.
                 candidates = matching_results
@@ -217,11 +303,16 @@ async def scan_due_subscriptions(
                             ),
                         )
                     ]
-                profile = (
-                    profile_provider() if profile_provider is not None else session.get(QualityProfile, 1)
-                ) or default_quality_profile()
-                selected_release = best_matching_release(profile, candidates)
-                if selected_release is not None:
+                ranked_candidates = profile_service.rank(
+                    profile,
+                    (
+                        candidates_by_fingerprint[release_fingerprint(subscription_id, release)]
+                        for release in candidates
+                        if release_fingerprint(subscription_id, release) in candidates_by_fingerprint
+                    ),
+                )
+                if ranked_candidates:
+                    selected_release = ranked_candidates[0].release
                     created_job = False
                     selected_row = session.exec(
                         select(SubscriptionRelease).where(
@@ -277,11 +368,6 @@ async def scan_due_subscriptions(
                     # succeeds; mark this subscription consumed afterwards.
                     if created_job:
                         durable_subscription.auto_grabbed_release_id = selected_row.id
-            completed_at = now() if callable(now) else now
-            durable_subscription.last_checked_at = completed_at
-            durable_subscription.last_error = None
-            durable_subscription.next_check_at = completed_at + timedelta(seconds=interval_seconds)
-            session.add(durable_subscription)
             session.commit()
         except Exception as exc:  # noqa: BLE001 - isolate each durable subscription scan
             session.rollback()
