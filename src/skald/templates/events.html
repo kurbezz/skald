@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Events — Skald{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Events<span class="accent-dot">.</span></h1>
+    <p class="page-sub">A read-only history of release matches, upgrade suggestions, and delivery results.</p>
+  </div>
+</div>
+
+{% if event_rows %}
+<div class="panel table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Event</th>
+        <th>Quality</th>
+        <th>Delivery</th>
+        <th>Created</th>
+        <th>Read state</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for event, release, attempts in event_rows %}
+      <tr>
+        <td>
+          {% if event.kind.value == "upgrade_proposal" %}
+          <span class="badge badge-downloading"><span class="badge-dot" aria-hidden="true"></span>Upgrade proposal</span>
+          {% else %}
+          <span class="badge badge-completed"><span class="badge-dot" aria-hidden="true"></span>Release match</span>
+          {% endif %}
+          <div class="release-title">{{ event.title }}</div>
+          <div class="cell-muted">{{ event.body }}</div>
+        </td>
+        <td class="cell-muted">
+          {% if event.prior_quality_score or event.current_quality_score %}
+          {% if event.prior_quality_score %}<div>Before: {{ event.prior_quality_score | join(' / ') }}</div>{% endif %}
+          {% if event.current_quality_score %}<div>Candidate: {{ event.current_quality_score | join(' / ') }}</div>{% endif %}
+          {% else %}
+          <span aria-label="No quality comparison">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if attempts %}
+            {% for attempt in attempts %}
+            {% if attempt.outcome.value == "sent" %}
+            <div><span class="badge badge-organized"><span class="badge-dot" aria-hidden="true"></span>{{ attempt.channel.value }} · Sent</span></div>
+            {% elif attempt.outcome.value == "failed" %}
+            <div><span class="badge badge-failed"><span class="badge-dot" aria-hidden="true"></span>{{ attempt.channel.value }} · Failed</span>{% if attempt.error_summary %}<div class="cell-muted">{{ attempt.error_summary }}</div>{% endif %}</div>
+            {% else %}
+            <div><span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>{{ attempt.channel.value }} · Skipped</span>{% if attempt.error_summary %}<div class="cell-muted">{{ attempt.error_summary }}</div>{% endif %}</div>
+            {% endif %}
+            {% endfor %}
+          {% else %}
+          <span class="cell-muted">Not delivered</span>
+          {% endif %}
+        </td>
+        <td class="cell-muted">{{ event.created_at }}</td>
+        <td>
+          {% if event.read_at %}
+          <span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>Read</span>
+          {% else %}
+          <span class="badge badge-needs_attention"><span class="badge-dot" aria-hidden="true"></span>Unread</span>
+          {% endif %}
+        </td>
+        <td>
+          <div class="subscription-actions">
+            {% if release %}
+            <a class="job-link" href="/search?q={{ release.release_title | urlencode }}&amp;type={{ event.media_type.value }}" aria-label="Open manual search for {{ release.release_title }}">Review in search</a>
+            {% endif %}
+            {% if not event.read_at %}
+            <form method="post" action="/events/{{ event.id }}/read">
+              <button type="submit" class="btn-quiet" aria-label="Mark {{ event.title }} as read">Mark read</button>
+            </form>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel empty-state">
+  <div class="glyph">—</div>
+  <p>No events yet. Matching releases and upgrade suggestions will appear here.</p>
+</div>
+{% endif %}
+{% endblock %}

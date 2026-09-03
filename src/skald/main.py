@@ -12,6 +12,7 @@ from skald.db import get_engine, get_session, migrate_schema
 from skald.indexer.torznab import TorznabIndexer
 from skald.qbittorrent import QbittorrentClient
 from skald.routes.auth import router as auth_router
+from skald.routes.events import router as events_router
 from skald.routes.jobs import router as jobs_router
 from skald.routes.quality import router as quality_router
 from skald.routes.search import router as search_router
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router, dependencies=[Depends(require_auth)])
     app.include_router(quality_router, dependencies=[Depends(require_auth)])
     app.include_router(subscriptions_router, dependencies=[Depends(require_auth)])
+    app.include_router(events_router, dependencies=[Depends(require_auth)])
 
     @app.get("/")
     async def root() -> RedirectResponse:

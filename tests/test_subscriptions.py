@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from urllib.parse import quote_plus
 
 import pytest
 from fastapi.responses import HTMLResponse
@@ -781,6 +782,142 @@ def test_subscriptions_page_renders_catalog_subscription_and_recent_release(clie
     assert "Catalog matches" in response.text
     assert "1 unread" in response.text
     assert "The.Matrix.1999.1080p" in response.text
+
+
+def test_events_history_renders_delivery_audit_and_manual_search_link(client, app):
+    with Session(app.state.engine) as database_session:
+        subscription = MediaSubscription(
+            tmdb_id=603, type=MediaType.MOVIE, title="The Matrix"
+        )
+        database_session.add(subscription)
+        database_session.commit()
+        release = SubscriptionRelease(
+            subscription_id=subscription.id,
+            release_title="The Matrix 1999 2160p",
+            indexer="fake",
+            size_bytes=1,
+            seeders=9,
+            leechers=0,
+            download_url="magnet:?matrix-event",
+            fingerprint="matrix-event-release",
+        )
+        database_session.add(release)
+        database_session.commit()
+        release_title = release.release_title
+        database_session.add_all([
+            SubscriptionEvent(
+                subscription_id=subscription.id,
+                subscription_release_id=release.id,
+                media_type=MediaType.MOVIE,
+                kind=SubscriptionEventKind.RELEASE_MATCH,
+                dedupe_key="release:matrix-event-release",
+                title="New movie release: The Matrix",
+                body="The Matrix 1999 2160p (9 seeders)",
+            ),
+            SubscriptionEvent(
+                subscription_id=subscription.id,
+                subscription_release_id=release.id,
+                media_type=MediaType.MOVIE,
+                target_key="movie:tmdb:603",
+                kind=SubscriptionEventKind.UPGRADE_PROPOSAL,
+                dedupe_key="upgrade:movie:tmdb:603:matrix-event-release",
+                title="Upgrade available",
+                body="A sharper release is ready to review.",
+                prior_quality_score=[3, 2, 2],
+                current_quality_score=[4, 3, 3],
+            ),
+        ])
+        database_session.commit()
+        proposal = database_session.exec(
+            select(SubscriptionEvent).where(
+                SubscriptionEvent.kind == SubscriptionEventKind.UPGRADE_PROPOSAL
+            )
+        ).one()
+        database_session.add(NotificationDeliveryAttempt(
+            event_id=proposal.id,
+            channel=NotificationChannel.EMAIL,
+            outcome="sent",
+            provider_message_id="message-1",
+        ))
+        database_session.commit()
+
+    response = client.get("/events")
+
+    assert response.status_code == 200
+    assert "New movie release: The Matrix" in response.text
+    assert "Upgrade available" in response.text
+    assert "release match" in response.text.lower()
+    assert "upgrade proposal" in response.text.lower()
+    assert "3 / 2 / 2" in response.text
+    assert "4 / 3 / 3" in response.text
+    assert "email" in response.text.lower()
+    assert "sent" in response.text.lower()
+    assert (
+        f"/search?q={quote_plus(release_title)}&amp;type=movie" in response.text
+    )
+    qbit = RecordingQbit()
+    app.state.indexer = ScanIndexer([])
+    app.state.qbit = qbit
+    manual_search = client.get(
+        f"/search?q={quote_plus(release_title)}&type=movie"
+    )
+    assert manual_search.status_code == 200
+    assert qbit.add_calls == []
+    with Session(app.state.engine) as database_session:
+        assert database_session.exec(select(MediaJob)).all() == []
+
+
+def test_event_read_action_updates_only_the_requested_event_and_404s(client, app):
+    with Session(app.state.engine) as database_session:
+        subscription = MediaSubscription(
+            tmdb_id=603, type=MediaType.MOVIE, title="The Matrix"
+        )
+        database_session.add(subscription)
+        database_session.commit()
+        first = SubscriptionEvent(
+            subscription_id=subscription.id,
+            media_type=MediaType.MOVIE,
+            kind=SubscriptionEventKind.RELEASE_MATCH,
+            dedupe_key="release:event-read-first",
+            title="First event",
+            body="First event body",
+        )
+        second = SubscriptionEvent(
+            subscription_id=subscription.id,
+            media_type=MediaType.MOVIE,
+            kind=SubscriptionEventKind.RELEASE_MATCH,
+            dedupe_key="release:event-read-second",
+            title="Second event",
+            body="Second event body",
+        )
+        database_session.add_all([first, second])
+        database_session.commit()
+        first_id, second_id = first.id, second.id
+
+    marked = client.post(f"/events/{first_id}/read", follow_redirects=False)
+
+    assert marked.status_code == 303
+    assert marked.headers["location"] == "/events"
+    assert client.post("/events/999/read", follow_redirects=False).status_code == 404
+    with Session(app.state.engine) as database_session:
+        assert database_session.get(SubscriptionEvent, first_id).read_at is not None
+        assert database_session.get(SubscriptionEvent, second_id).read_at is None
+
+
+def test_events_routes_require_configured_auth(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "events-auth.db"))
+    monkeypatch.setenv("AUTH_USERNAME", "testuser")
+    monkeypatch.setenv("AUTH_PASSWORD", "testpass")
+    app = create_app()
+
+    with TestClient(app) as client:
+        history = client.get("/events", follow_redirects=False)
+        read = client.post("/events/1/read", follow_redirects=False)
+
+    assert history.status_code == 303
+    assert history.headers["location"] == "/login?next=/events"
+    assert read.status_code == 303
+    assert read.headers["location"] == "/login?next=/events/1/read"
 
 
 def test_subscription_creation_is_idempotent_and_missing_media_is_404(client, app):
