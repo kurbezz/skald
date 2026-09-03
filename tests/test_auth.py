@@ -4,7 +4,13 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import HTTPConnection
 
-from skald.auth import create_session_cookie, require_auth, verify_session_cookie
+from skald.auth import (
+    create_csrf_token,
+    create_session_cookie,
+    require_auth,
+    verify_csrf_token,
+    verify_session_cookie,
+)
 from skald.config import get_settings
 
 
@@ -63,6 +69,16 @@ def test_create_and_verify_session_cookie_round_trip(monkeypatch):
 
     cookie = create_session_cookie()
     assert verify_session_cookie(cookie) is True
+
+
+def test_csrf_token_is_valid_only_for_its_session_and_rejects_tampering(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "csrf-secret")
+
+    token = create_csrf_token("session-a")
+
+    assert verify_csrf_token("session-a", token) is True
+    assert verify_csrf_token("session-b", token) is False
+    assert verify_csrf_token("session-a", f"{token}tampered") is False
 
 
 def test_verify_session_cookie_rejects_none():

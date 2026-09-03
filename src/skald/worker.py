@@ -207,7 +207,7 @@ def organize_job(session: Session, job: MediaJob, movies_root: str, tv_root: str
         )
 
     try:
-        link_file(source, target)
+        link_result = link_file(source, target)
     except FileExistsError as exc:
         job.status = JobStatus.NEEDS_ATTENTION
         job.error_message = str(exc)
@@ -215,11 +215,13 @@ def organize_job(session: Session, job: MediaJob, movies_root: str, tv_root: str
         session.commit()
         return
 
+    # link_file captures the creation identity before it returns. Retain it
+    # so a later baseline-write failure can remove only this attempt's file,
+    # never a concurrent user replacement.
     job.library_path = str(target)
     job.status = JobStatus.ORGANIZED
     session.add(job)
-    session.commit()
-    _record_downloaded_quality(session, job.id)
+    _commit_organized_with_quality(session, job, cleanup_target=(target, link_result.identity))
 
 
 def _conditional_organizing_write(session: Session, job_id: int, **values) -> bool:
@@ -364,7 +366,16 @@ def organize_tv_pack(
 
             published_targets.append(target)
 
-        _finalize_tv_pack_job(session, job_id, token, published_targets)
+        _finalize_tv_pack_job(
+            session,
+            job_id,
+            token,
+            published_targets,
+            requires_quality_baseline=(
+                job.source_subscription_id is not None
+                and job.source_subscription_release_id is not None
+            ),
+        )
 
 
 def _transition_organized_file(
@@ -449,7 +460,12 @@ def _persist_attempt_owned_staging_identities(
 
 
 def _finalize_tv_pack_job(
-    session: Session, job_id: int, token: str, published_targets: list[Path]
+    session: Session,
+    job_id: int,
+    token: str,
+    published_targets: list[Path],
+    *,
+    requires_quality_baseline: bool,
 ) -> None:
     """Finalize ORGANIZING -> ORGANIZED only if every row for this token is published.
 
@@ -478,21 +494,52 @@ def _finalize_tv_pack_job(
         )
     )
     if result.rowcount == 1:
-        session.commit()
-        _record_downloaded_quality(session, job_id)
+        if not requires_quality_baseline:
+            session.commit()
+            return
+        job = session.get(MediaJob, job_id, populate_existing=True)
+        if job is None:
+            session.rollback()
+            return
+        _commit_organized_with_quality(session, job)
     else:
         session.rollback()
 
 
-def _record_downloaded_quality(session: Session, job_id: int) -> None:
-    """Keep baseline persistence best-effort after organization is durable."""
+def _commit_organized_with_quality(
+    session: Session,
+    job: MediaJob,
+    *,
+    cleanup_target: tuple[Path, FileIdentity] | None = None,
+) -> None:
+    """Commit organization and any required baseline as one transaction.
+
+    `record_organized_quality` handles non-persistence derivation failures by
+    omitting a baseline.  Database errors are deliberately allowed to escape:
+    rolling this transaction back is the only safe outcome when a required
+    baseline cannot be durably written.
+    """
     try:
-        job = session.get(MediaJob, job_id, populate_existing=True)
-        if job is not None:
+        if (
+            job.source_subscription_id is not None
+            and job.source_subscription_release_id is not None
+        ):
             record_organized_quality(session, job)
-    except Exception:  # noqa: BLE001 - a baseline must never undo organization
-        logger.exception("could not record downloaded quality for job %s", job_id)
+        session.commit()
+    except Exception:
+        if cleanup_target is not None:
+            target, target_identity = cleanup_target
+            cleanup = cleanup_owned_file(target, target_identity)
+            if cleanup.removed:
+                prune_empty_parent(target)
+            elif cleanup.error:
+                logger.error(
+                    "could not clean scalar target after organization rollback %s: %s",
+                    target,
+                    cleanup.error,
+                )
         session.rollback()
+        raise
 
 
 def _mark_pack_job_needs_attention(

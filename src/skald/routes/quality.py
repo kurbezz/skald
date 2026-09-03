@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
+from skald.auth import SESSION_COOKIE_NAME, create_csrf_token, verify_csrf_form
 from skald.db import get_session
 from skald.models import MediaType, QualityProfile, _utcnow
 from skald.quality import (
@@ -109,6 +110,7 @@ def _error_response(
             "submitted": submitted,
             "error_field": error.field,
             "error": str(error),
+            "csrf_token": create_csrf_token(request.cookies.get(SESSION_COOKIE_NAME)),
         },
         status_code=422,
     )
@@ -119,7 +121,14 @@ async def get_quality(request: Request):
     with get_session(request.app.state.engine) as session:
         profiles = _profile_views(_profiles(session))
         session.commit()
-    return templates.TemplateResponse(request, "quality.html", {"profiles": profiles})
+    return templates.TemplateResponse(
+        request,
+        "quality.html",
+        {
+            "profiles": profiles,
+            "csrf_token": create_csrf_token(request.cookies.get(SESSION_COOKIE_NAME)),
+        },
+    )
 
 
 @router.post("/quality/{media_type}")
@@ -139,6 +148,9 @@ async def update_quality(
     preferred_size_band_min: list[str] = Form(default=[]),
     preferred_size_band_max: list[str] = Form(default=[]),
 ):
+    if not await verify_csrf_form(request):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
     if media_type not in {MediaType.MOVIE.value, MediaType.TV.value}:
         raise HTTPException(status_code=404, detail="Quality profile not found")
 

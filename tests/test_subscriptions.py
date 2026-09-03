@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 
 import pytest
 from fastapi.responses import HTMLResponse
@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from skald.auth import create_csrf_token
 from skald.db import get_engine, migrate_schema
 from skald.indexer.base import ReleaseResult
 from skald.config import Settings
@@ -29,6 +30,7 @@ from skald.qbittorrent import TorrentFile
 from skald.routes import subscriptions as subscription_routes
 from skald.subscriptions import (
     matching_tv_subscription_scopes,
+    release_fingerprint,
     scan_due_subscriptions,
     tv_scope_matches_release,
 )
@@ -347,6 +349,65 @@ async def test_due_scan_records_first_result_then_deduplicates(session):
     assert len(session.exec(select(SubscriptionRelease)).all()) == 1
     assert indexer.queries == ["The Matrix 1999", "The Matrix 1999"]
     assert session.exec(select(MediaJob)).all() == []
+
+
+async def test_due_scan_treats_concurrent_fingerprint_conflict_as_successful_deduplication(
+    session, monkeypatch
+):
+    now = datetime(2026, 9, 3, tzinfo=UTC)
+    subscription = MediaSubscription(
+        tmdb_id=603,
+        type=MediaType.MOVIE,
+        title="The Matrix",
+        year=1999,
+        next_check_at=now,
+    )
+    release = ReleaseResult("The.Matrix.1999.1080p", "fake", 1, 2, 3, "magnet:?race")
+    session.add(subscription)
+    session.commit()
+    fingerprint = release_fingerprint(subscription.id, release)
+    session.add(SubscriptionRelease(
+        subscription_id=subscription.id,
+        release_title=release.title,
+        indexer=release.indexer,
+        size_bytes=release.size_bytes,
+        seeders=release.seeders,
+        leechers=release.leechers,
+        download_url=release.download_url,
+        fingerprint=fingerprint,
+    ))
+    session.commit()
+
+    original_exec = session.exec
+    stale_lookup_returned = False
+
+    class EmptyResult:
+        def first(self):
+            return None
+
+    def stale_first_release_lookup(statement, *args, **kwargs):
+        nonlocal stale_lookup_returned
+        entity = statement.column_descriptions[0].get("entity")
+        if entity is SubscriptionRelease and not stale_lookup_returned:
+            stale_lookup_returned = True
+            return EmptyResult()
+        return original_exec(statement, *args, **kwargs)
+
+    monkeypatch.setattr(session, "exec", stale_first_release_lookup)
+
+    await scan_due_subscriptions(
+        session,
+        ScanIndexer([release]),
+        interval_seconds=60,
+        now=now,
+    )
+
+    session.refresh(subscription)
+    assert len(session.exec(select(SubscriptionRelease)).all()) == 1
+    assert session.exec(select(SubscriptionEvent)).all() == []
+    assert subscription.last_error is None
+    assert subscription.last_checked_at.replace(tzinfo=UTC) == now
+    assert subscription.next_check_at.replace(tzinfo=UTC) == now + timedelta(seconds=60)
 
 
 async def test_delivery_failure_does_not_stop_the_next_subscription_scan(session):
@@ -844,6 +905,7 @@ def test_events_history_renders_delivery_audit_and_manual_search_link(client, ap
     response = client.get("/events")
 
     assert response.status_code == 200
+    assert f'name="csrf_token" value="{create_csrf_token(None)}"' in response.text
     assert "New movie release: The Matrix" in response.text
     assert "Upgrade available" in response.text
     assert "release match" in response.text.lower()
@@ -894,11 +956,36 @@ def test_event_read_action_updates_only_the_requested_event_and_404s(client, app
         database_session.commit()
         first_id, second_id = first.id, second.id
 
-    marked = client.post(f"/events/{first_id}/read", follow_redirects=False)
+    rejected = client.post(f"/events/{first_id}/read", follow_redirects=False)
 
-    assert marked.status_code == 303
+    assert rejected.status_code == 403
+    for csrf_tokens in (
+        ("invalid-token", create_csrf_token(None)),
+        (create_csrf_token(None), "invalid-token"),
+    ):
+        rejected_duplicate = client.post(
+            f"/events/{first_id}/read",
+            content=urlencode([("csrf_token", token) for token in csrf_tokens]),
+            headers={"content-type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+
+        assert rejected_duplicate.status_code == 403
+        with Session(app.state.engine) as database_session:
+            assert database_session.get(SubscriptionEvent, first_id).read_at is None
+            assert database_session.get(SubscriptionEvent, second_id).read_at is None
+
+    marked = client.post(
+        f"/events/{first_id}/read",
+        data={"csrf_token": create_csrf_token(None)},
+        follow_redirects=False,
+    )
     assert marked.headers["location"] == "/events"
-    assert client.post("/events/999/read", follow_redirects=False).status_code == 404
+    assert client.post(
+        "/events/999/read",
+        data={"csrf_token": create_csrf_token(None)},
+        follow_redirects=False,
+    ).status_code == 404
     with Session(app.state.engine) as database_session:
         assert database_session.get(SubscriptionEvent, first_id).read_at is not None
         assert database_session.get(SubscriptionEvent, second_id).read_at is None

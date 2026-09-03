@@ -592,10 +592,36 @@ def test_link_file_creates_hardlink(tmp_path):
     source.write_text("data")
     target = tmp_path / "lib" / "Movie (2020)" / "Movie (2020).mkv"
 
-    link_file(source, target)
+    result = link_file(source, target)
 
     assert target.exists()
     assert target.read_text() == "data"
+    assert result.identity == file_identity(target)
+
+
+def test_link_file_hardlink_result_keeps_source_identity_through_target_replacement(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.write_text("downloaded")
+
+    import skald.organizer as organizer_module
+
+    original_link = organizer_module.os.link
+
+    def link_then_replace(source, target):
+        original_link(source, target)
+        target.unlink()
+        target.write_text("user replacement")
+
+    monkeypatch.setattr(organizer_module.os, "link", link_then_replace)
+
+    result = link_file(source, target)
+
+    assert result.identity == file_identity(source)
+    assert result.identity != file_identity(target)
+    assert target.read_text() == "user replacement"
 
 
 def test_link_file_raises_if_target_exists(tmp_path):

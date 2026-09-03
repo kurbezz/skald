@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 import logging
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from skald.config import Settings
@@ -121,6 +122,21 @@ def _persist_release_scope_targets(
             ))
 
 
+def persisted_tv_subscription_scopes(
+    session: Session, release: SubscriptionRelease
+) -> list[TvSubscriptionScope]:
+    """Load the durable TV targets attached to one discovered release."""
+    return session.exec(
+        select(TvSubscriptionScope)
+        .join(
+            SubscriptionReleaseScope,
+            SubscriptionReleaseScope.tv_subscription_scope_id == TvSubscriptionScope.id,
+        )
+        .where(SubscriptionReleaseScope.subscription_release_id == release.id)
+        .order_by(TvSubscriptionScope.id)
+    ).all()
+
+
 def _published_at(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -131,9 +147,11 @@ def _published_at(value: str | None) -> datetime | None:
 
 
 def target_keys_for_subscription_release(
-    subscription: MediaSubscription, parsed: Mapping[str, object]
+    subscription: MediaSubscription,
+    parsed: Mapping[str, object],
+    matching_scopes: list[TvSubscriptionScope],
 ) -> list[str]:
-    """Return concrete, canonical baseline targets represented by one discovery."""
+    """Return canonical baseline targets covered by durable release scopes."""
     if subscription.type is MediaType.MOVIE:
         return [f"movie:tmdb:{subscription.tmdb_id}"]
     if subscription.type is not MediaType.TV:
@@ -150,13 +168,28 @@ def target_keys_for_subscription_release(
         if isinstance(episode, int) and not isinstance(episode, bool) and episode > 0
     }
     if episodes:
+        targets: set[int] = set()
+        for scope in matching_scopes:
+            if scope.includes_future_content:
+                targets.update(episodes)
+            elif scope.season_number == season:
+                if scope.episode_number is None:
+                    targets.update(episodes)
+                elif scope.episode_number in episodes:
+                    targets.add(scope.episode_number)
         return [
             f"tv:tmdb:{subscription.tmdb_id}:season:{season}:episode:{episode}"
-            for episode in sorted(episodes)
+            for episode in sorted(targets)
         ]
     if raw_episodes:
         return []
-    return [f"tv:tmdb:{subscription.tmdb_id}:season:{season}:pack"]
+    if any(
+        scope.includes_future_content
+        or (scope.season_number == season and scope.episode_number is None)
+        for scope in matching_scopes
+    ):
+        return [f"tv:tmdb:{subscription.tmdb_id}:season:{season}:pack"]
+    return []
 
 
 async def scan_due_subscriptions(
@@ -217,7 +250,7 @@ async def scan_due_subscriptions(
                 ).first()
                 newly_inserted = stored_release is None
                 if stored_release is None:
-                    stored_release = SubscriptionRelease(
+                    candidate_release = SubscriptionRelease(
                         subscription_id=subscription.id,
                         release_title=release.title,
                         indexer=release.indexer,
@@ -231,9 +264,22 @@ async def scan_due_subscriptions(
                         audio=observed.audio,
                         hdr=observed.hdr,
                     )
-                    session.add(stored_release)
-                    session.flush()
-                    newly_discovered_results.append(release)
+                    try:
+                        with session.begin_nested():
+                            session.add(candidate_release)
+                            session.flush()
+                    except IntegrityError:
+                        stored_release = session.exec(
+                            select(SubscriptionRelease).where(
+                                SubscriptionRelease.fingerprint == fingerprint
+                            )
+                        ).first()
+                        if stored_release is None:
+                            raise
+                        newly_inserted = False
+                    else:
+                        stored_release = candidate_release
+                        newly_discovered_results.append(release)
                 if scopes:
                     _persist_release_scope_targets(session, stored_release, scopes)
                     session.flush()
@@ -248,7 +294,11 @@ async def scan_due_subscriptions(
                         stored_release,
                         subscription,
                         observed,
-                        target_keys_for_subscription_release(subscription, parsed),
+                        target_keys_for_subscription_release(
+                            subscription,
+                            parsed,
+                            persisted_tv_subscription_scopes(session, stored_release),
+                        ),
                     ):
                         if proposal.id is not None:
                             created_event_ids.append(proposal.id)

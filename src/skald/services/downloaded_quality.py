@@ -41,7 +41,13 @@ def target_keys_for_job(session: Session, job: MediaJob) -> list[str]:
     if job.type is not MediaType.TV:
         return []
 
-    parsed = parse_release(job.release_title)
+    # Target identity still comes from the job's release title, but observed
+    # quality deliberately comes from the sourced release below.  The latter
+    # is the durable snapshot selected at subscription-scan time.
+    try:
+        parsed = parse_release(job.release_title)
+    except Exception:  # noqa: BLE001 - title parsing is best-effort derivation
+        return []
     season = parsed.get("season")
     if not isinstance(season, int) or isinstance(season, bool):
         return []
@@ -70,16 +76,43 @@ def target_keys_for_job(session: Session, job: MediaJob) -> list[str]:
 
 
 def record_organized_quality(session: Session, job: MediaJob) -> list[DownloadedQuality]:
-    """Upsert only strictly better current baselines for an ORGANIZED job."""
+    """Stage only strictly better current baselines for an ORGANIZED job.
+
+    This function intentionally does not commit.  Its caller must commit the
+    baseline together with the ORGANIZING -> ORGANIZED transition, so a crash
+    cannot leave an organized job without its required source-backed baseline.
+    """
     target_keys = target_keys_for_job(session, job)
     if not target_keys:
         return []
 
-    profile_service = QualityProfileService()
-    observed = profile_service.observed_from_parsed(parse_release(job.release_title), None)
-    score = profile_service.fixed_score(observed)
-    if len(score) != 3:
+    release = session.get(SubscriptionRelease, job.source_subscription_release_id)
+    if release is None:
         return []
+
+    profile_service = QualityProfileService()
+    # SubscriptionRelease holds normalized observation captured at discovery;
+    # do not re-derive baseline quality from a potentially changed/unparseable
+    # job title.  observed_from_parsed also rejects corrupted noncanonical
+    # durable values and invalid sizes.
+    observed = profile_service.observed_from_parsed(
+        {
+            "resolution": release.resolution,
+            "audio": release.audio,
+            "hdr": release.hdr,
+        },
+        release.size_bytes,
+    )
+    if (
+        observed.resolution == "unknown"
+        and observed.audio == "unknown"
+        and observed.hdr == "unknown"
+        and observed.size_bytes is None
+    ):
+        # A (0, 0, 0) score with no durable observed attribute is
+        # indeterminate, not a meaningful upgrade baseline.
+        return []
+    score = profile_service.fixed_score(observed)
 
     recorded: list[DownloadedQuality] = []
     for target_key in target_keys:
@@ -125,7 +158,6 @@ def record_organized_quality(session: Session, job: MediaJob) -> list[Downloaded
             recorded.append(existing)
         else:
             recorded.append(baseline)
-    session.commit()
     return recorded
 
 

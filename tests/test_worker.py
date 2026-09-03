@@ -470,6 +470,9 @@ async def test_poll_once_organizes_completed_movie(tmp_path):
             leechers=0,
             download_url="magnet:?matrix",
             fingerprint="organized-matrix",
+            resolution="1080p",
+            audio="unknown",
+            hdr="unknown",
         )
         session.add(release)
         session.commit()
@@ -533,6 +536,277 @@ def test_manual_organized_job_stays_organized_when_baseline_recording_fails(tmp_
 
         assert session.get(MediaJob, job.id).status is JobStatus.ORGANIZED
         assert session.exec(select(DownloadedQuality)).all() == []
+
+
+@pytest.mark.parametrize("is_pack", [False, True], ids=["scalar", "pack"])
+def test_organized_transition_and_source_baseline_commit_atomically(tmp_path, monkeypatch, is_pack):
+    engine = make_engine()
+    content_dir = tmp_path / "downloads" / ("Show.S01" if is_pack else "Film")
+    content_dir.mkdir(parents=True)
+    source_files = [content_dir / "Show.S01E01.mkv", content_dir / "Show.S01E02.mkv"] if is_pack else [content_dir / "film.mkv"]
+    for source in source_files:
+        source.write_text("data")
+
+    with Session(engine) as session:
+        media_type = MediaType.TV if is_pack else MediaType.MOVIE
+        subscription = MediaSubscription(tmdb_id=1, type=media_type, title="Show" if is_pack else "Film")
+        session.add(subscription)
+        session.commit()
+        release = SubscriptionRelease(
+            subscription_id=subscription.id,
+            release_title="Show.S01.1080p" if is_pack else "Film.2026.1080p",
+            indexer="fake",
+            size_bytes=2_048,
+            seeders=5,
+            leechers=0,
+            download_url="magnet:?atomic",
+            fingerprint=f"atomic:{is_pack}",
+            resolution="1080p",
+            audio="5.1",
+            hdr="hdr",
+        )
+        session.add(release)
+        session.commit()
+        job = MediaJob(
+            type=media_type,
+            title="Show" if is_pack else "Film",
+            year=None if is_pack else 2026,
+            release_title=release.release_title,
+            qbit_hash=f"hash:{is_pack}",
+            category="skald-tv" if is_pack else "skald-movie",
+            status=JobStatus.COMPLETED,
+            content_path=str(content_dir),
+            source_subscription_id=subscription.id,
+            source_subscription_release_id=release.id,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+        original_commit = session.commit
+        final_commit_baselines = []
+
+        def assert_baseline_is_pending_with_organized_transition():
+            pending_job = session.get(MediaJob, job_id, populate_existing=True)
+            if pending_job.status is JobStatus.ORGANIZED:
+                final_commit_baselines.append(
+                    session.exec(select(DownloadedQuality)).one().media_job_id
+                )
+            original_commit()
+
+        monkeypatch.setattr(session, "commit", assert_baseline_is_pending_with_organized_transition)
+        organize_job(session, job, str(tmp_path / "movies"), str(tmp_path / "tv"))
+
+        assert final_commit_baselines == [job_id]
+
+    with Session(engine) as session:
+        assert session.get(MediaJob, job_id).status is JobStatus.ORGANIZED
+        assert session.exec(select(DownloadedQuality)).one().media_job_id == job_id
+
+
+@pytest.mark.parametrize("is_pack", [False, True], ids=["scalar", "pack"])
+def test_baseline_persistence_failure_rolls_back_organized_transition(tmp_path, monkeypatch, is_pack):
+    engine = make_engine()
+    content_dir = tmp_path / "downloads" / ("Show.S01" if is_pack else "Film")
+    content_dir.mkdir(parents=True)
+    source_files = [content_dir / "Show.S01E01.mkv", content_dir / "Show.S01E02.mkv"] if is_pack else [content_dir / "film.mkv"]
+    for source in source_files:
+        source.write_text("data")
+
+    with Session(engine) as session:
+        media_type = MediaType.TV if is_pack else MediaType.MOVIE
+        subscription = MediaSubscription(tmdb_id=2, type=media_type, title="Show" if is_pack else "Film")
+        session.add(subscription)
+        session.commit()
+        release = SubscriptionRelease(
+            subscription_id=subscription.id,
+            release_title="Show.S01.1080p" if is_pack else "Film.2026.1080p",
+            indexer="fake",
+            size_bytes=2_048,
+            seeders=5,
+            leechers=0,
+            download_url="magnet:?failure",
+            fingerprint=f"failure:{is_pack}",
+            resolution="1080p",
+            audio="5.1",
+            hdr="hdr",
+        )
+        session.add(release)
+        session.commit()
+        job = MediaJob(
+            type=media_type,
+            title="Show" if is_pack else "Film",
+            year=None if is_pack else 2026,
+            release_title=release.release_title,
+            qbit_hash=f"failure:{is_pack}",
+            category="skald-tv" if is_pack else "skald-movie",
+            status=JobStatus.COMPLETED,
+            content_path=str(content_dir),
+            source_subscription_id=subscription.id,
+            source_subscription_release_id=release.id,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+        def fail_required_baseline_write(session, job):
+            raise SQLAlchemyError("baseline write failed")
+
+        monkeypatch.setattr("skald.worker.record_organized_quality", fail_required_baseline_write)
+        with pytest.raises(SQLAlchemyError, match="baseline write failed"):
+            organize_job(session, job, str(tmp_path / "movies"), str(tmp_path / "tv"))
+
+    with Session(engine) as session:
+        assert session.get(MediaJob, job_id).status is JobStatus.ORGANIZING
+        assert session.exec(select(DownloadedQuality)).all() == []
+
+
+async def test_scalar_baseline_failure_cleans_link_then_recovery_retries_with_baseline(
+    tmp_path, monkeypatch
+):
+    """A failed atomic baseline write must not leave a scalar target blocking retry."""
+    engine = make_engine()
+    content_dir = tmp_path / "downloads" / "Film"
+    content_dir.mkdir(parents=True)
+    (content_dir / "film.mkv").write_text("downloaded")
+    movies_root = tmp_path / "movies"
+    target = movies_root / "Film (2026)" / "Film (2026).mkv"
+
+    with Session(engine) as session:
+        subscription = MediaSubscription(tmdb_id=3, type=MediaType.MOVIE, title="Film")
+        session.add(subscription)
+        session.commit()
+        release = SubscriptionRelease(
+            subscription_id=subscription.id,
+            release_title="Film.2026.1080p",
+            indexer="fake",
+            size_bytes=2_048,
+            seeders=5,
+            leechers=0,
+            download_url="magnet:?retry",
+            fingerprint="retry-release",
+            resolution="1080p",
+            audio="5.1",
+            hdr="hdr",
+        )
+        session.add(release)
+        session.commit()
+        job = MediaJob(
+            type=MediaType.MOVIE,
+            title="Film",
+            year=2026,
+            release_title=release.release_title,
+            qbit_hash="retry-hash",
+            category="skald-movie",
+            status=JobStatus.COMPLETED,
+            content_path=str(content_dir),
+            source_subscription_id=subscription.id,
+            source_subscription_release_id=release.id,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+        import skald.worker as worker_module
+
+        original_record = worker_module.record_organized_quality
+        calls = 0
+
+        def fail_first_baseline_write(session, job):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise SQLAlchemyError("baseline write failed")
+            return original_record(session, job)
+
+        monkeypatch.setattr(worker_module, "record_organized_quality", fail_first_baseline_write)
+        qbit = FakeQbit({
+            "retry-hash": TorrentStatus(
+                hash="retry-hash",
+                progress=1.0,
+                state="uploading",
+                content_path=str(content_dir),
+                save_path=str(content_dir.parent),
+            )
+        })
+        await poll_once(session, qbit, str(movies_root), str(tmp_path / "tv"))
+
+        assert not target.exists()
+        assert session.get(MediaJob, job_id).status is JobStatus.ORGANIZING
+        assert calls == 1
+
+        # Recovery returns scalar jobs to COMPLETED; a following poll retries
+        # the filesystem link and baseline transaction.
+        await poll_once(session, qbit, str(movies_root), str(tmp_path / "tv"))
+        assert session.get(MediaJob, job_id).status is JobStatus.COMPLETED
+
+        await poll_once(session, qbit, str(movies_root), str(tmp_path / "tv"))
+
+        assert target.exists()
+        assert session.get(MediaJob, job_id).status is JobStatus.ORGANIZED
+        assert session.exec(select(DownloadedQuality)).one().media_job_id == job_id
+        assert calls == 2
+
+
+def test_scalar_baseline_failure_never_deletes_a_replaced_user_target(tmp_path, monkeypatch):
+    engine = make_engine()
+    content_dir = tmp_path / "downloads" / "Film"
+    content_dir.mkdir(parents=True)
+    (content_dir / "film.mkv").write_text("downloaded")
+    movies_root = tmp_path / "movies"
+    target = movies_root / "Film (2026)" / "Film (2026).mkv"
+
+    with Session(engine) as session:
+        subscription = MediaSubscription(tmdb_id=4, type=MediaType.MOVIE, title="Film")
+        session.add(subscription)
+        session.commit()
+        release = SubscriptionRelease(
+            subscription_id=subscription.id,
+            release_title="Film.2026.1080p",
+            indexer="fake",
+            size_bytes=2_048,
+            seeders=5,
+            leechers=0,
+            download_url="magnet:?replacement",
+            fingerprint="replacement-release",
+            resolution="1080p",
+            audio="5.1",
+            hdr="hdr",
+        )
+        session.add(release)
+        session.commit()
+        job = MediaJob(
+            type=MediaType.MOVIE,
+            title="Film",
+            year=2026,
+            release_title=release.release_title,
+            qbit_hash="replacement-hash",
+            category="skald-movie",
+            status=JobStatus.COMPLETED,
+            content_path=str(content_dir),
+            source_subscription_id=subscription.id,
+            source_subscription_release_id=release.id,
+        )
+        session.add(job)
+        session.commit()
+
+        import skald.organizer as organizer_module
+
+        original_link = organizer_module.os.link
+
+        def replace_target_during_link(source, target):
+            original_link(source, target)
+            target.unlink()
+            target.write_text("user replacement")
+
+        def fail_baseline_write(session, job):
+            raise SQLAlchemyError("baseline write failed")
+
+        monkeypatch.setattr(organizer_module.os, "link", replace_target_during_link)
+        monkeypatch.setattr("skald.worker.record_organized_quality", fail_baseline_write)
+        with pytest.raises(SQLAlchemyError, match="baseline write failed"):
+            organize_job(session, job, str(movies_root), str(tmp_path / "tv"))
+
+    assert target.read_text() == "user replacement"
 
 
 async def test_poll_once_organizes_completed_tv_episode(tmp_path):
@@ -655,6 +929,9 @@ async def test_poll_once_organizes_all_episodes_in_tv_pack(tmp_path):
             leechers=0,
             download_url="magnet:?show-pack",
             fingerprint="organized-show-pack",
+            resolution="1080p",
+            audio="unknown",
+            hdr="unknown",
         )
         session.add(release)
         session.commit()

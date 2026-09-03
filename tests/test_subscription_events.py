@@ -14,6 +14,7 @@ from skald.models import (
     SubscriptionEvent,
     SubscriptionEventKind,
     SubscriptionRelease,
+    TvSubscriptionScope,
 )
 from skald.services.events import create_release_match, create_upgrade_proposal
 from skald.services.events import create_upgrade_proposals
@@ -269,19 +270,34 @@ def test_upgrade_proposals_skip_equal_or_worse_baselines(session):
     assert worse == []
 
 
-def test_tv_target_keys_cover_episodes_packs_unscoped_and_malformed_values(session):
+def test_tv_target_keys_intersect_episodes_and_packs_with_matching_scopes(session):
     tv = MediaSubscription(tmdb_id=1396, type=MediaType.TV, title="Breaking Bad")
+    season = TvSubscriptionScope(
+        subscription_id=1, tmdb_series_id=1396, tmdb_season_id=3577, season_number=2
+    )
+    episode_two = TvSubscriptionScope(
+        subscription_id=1,
+        tmdb_series_id=1396,
+        tmdb_season_id=3577,
+        tmdb_episode_id=62084,
+        season_number=2,
+        episode_number=2,
+    )
 
-    assert target_keys_for_subscription_release(tv, {"season": 2, "episode_set": (4, 2, 4)}) == [
+    assert target_keys_for_subscription_release(
+        tv, {"season": 2, "episode_set": (4, 2, 4)}, [episode_two]
+    ) == [
         "tv:tmdb:1396:season:2:episode:2",
-        "tv:tmdb:1396:season:2:episode:4",
     ]
-    assert target_keys_for_subscription_release(tv, {"season": 2, "episode_set": ()}) == [
+    assert target_keys_for_subscription_release(
+        tv, {"season": 2, "episode_set": ()}, [season]
+    ) == [
         "tv:tmdb:1396:season:2:pack"
     ]
-    assert target_keys_for_subscription_release(tv, {"season": None, "episode_set": ()}) == []
-    assert target_keys_for_subscription_release(tv, {"season": 2, "episode_set": "bad"}) == []
-    assert target_keys_for_subscription_release(tv, {"season": 2, "episode_set": (0,)}) == []
+    assert target_keys_for_subscription_release(tv, {"season": 2, "episode_set": ()}, [episode_two]) == []
+    assert target_keys_for_subscription_release(tv, {"season": None, "episode_set": ()}, [season]) == []
+    assert target_keys_for_subscription_release(tv, {"season": 2, "episode_set": "bad"}, [season]) == []
+    assert target_keys_for_subscription_release(tv, {"season": 2, "episode_set": (0,)}, [season]) == []
 
 
 def test_multi_episode_upgrade_proposals_are_independent_and_deduplicated(session):
@@ -321,7 +337,26 @@ def test_multi_episode_upgrade_proposals_are_independent_and_deduplicated(sessio
     session.commit()
 
     target_keys = target_keys_for_subscription_release(
-        subscription, {"season": 2, "episode_set": (2, 3)}
+        subscription,
+        {"season": 2, "episode_set": (2, 3)},
+        [
+            TvSubscriptionScope(
+                subscription_id=subscription.id,
+                tmdb_series_id=1396,
+                tmdb_season_id=3577,
+                tmdb_episode_id=62084,
+                season_number=2,
+                episode_number=2,
+            ),
+            TvSubscriptionScope(
+                subscription_id=subscription.id,
+                tmdb_series_id=1396,
+                tmdb_season_id=3577,
+                tmdb_episode_id=62085,
+                season_number=2,
+                episode_number=3,
+            ),
+        ],
     )
     first = create_upgrade_proposals(
         session, release, subscription, ObservedQuality("2160p", "7.1", "hdr10", None), target_keys
@@ -332,6 +367,67 @@ def test_multi_episode_upgrade_proposals_are_independent_and_deduplicated(sessio
 
     assert len(first) == 2
     assert second == []
+
+
+async def test_scan_proposes_tv_upgrades_only_for_persisted_matching_scope_episodes(session):
+    now = datetime(2026, 9, 3, tzinfo=UTC)
+    subscription = MediaSubscription(
+        tmdb_id=1396, type=MediaType.TV, title="Breaking Bad", next_check_at=now
+    )
+    job = MediaJob(
+        type=MediaType.TV,
+        title="Breaking Bad",
+        season=2,
+        episode=2,
+        release_title="Breaking.Bad.S02E02.1080p",
+        qbit_hash="baseline-tv-scope",
+        category="skald-tv",
+    )
+    session.add_all([subscription, job])
+    session.commit()
+    session.add(TvSubscriptionScope(
+        subscription_id=subscription.id,
+        tmdb_series_id=1396,
+        tmdb_season_id=3577,
+        tmdb_episode_id=62084,
+        season_number=2,
+        episode_number=2,
+    ))
+    for episode in (2, 3):
+        session.add(DownloadedQuality(
+            media_type=MediaType.TV,
+            target_key=f"tv:tmdb:1396:season:2:episode:{episode}",
+            media_job_id=job.id,
+            resolution="1080p",
+            audio="5.1",
+            hdr="hdr",
+            score_version="v1",
+            quality_score=[3, 2, 2],
+        ))
+    session.commit()
+
+    await scan_due_subscriptions(
+        session,
+        ScanIndexer([
+            ReleaseResult(
+                "Breaking.Bad.S02E02-E03.2160p.7.1.HDR10",
+                "fake",
+                2_000_000_000,
+                9,
+                0,
+                "magnet:?scoped-upgrade",
+            ),
+        ]),
+        interval_seconds=60,
+        now=now,
+    )
+
+    proposals = session.exec(select(SubscriptionEvent).where(
+        SubscriptionEvent.kind == SubscriptionEventKind.UPGRADE_PROPOSAL
+    )).all()
+    assert [proposal.target_key for proposal in proposals] == [
+        "tv:tmdb:1396:season:2:episode:2"
+    ]
 
 
 async def test_repeated_scans_do_not_duplicate_events(session):

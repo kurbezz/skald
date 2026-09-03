@@ -11,6 +11,7 @@ from skald.models import (
     QualityProfile,
     SubscriptionRelease,
 )
+from skald.parser import parse_release
 from skald.services.downloaded_quality import (
     record_organized_quality,
     target_keys_for_job,
@@ -32,6 +33,7 @@ def sourced_job(
     subscription = MediaSubscription(tmdb_id=tmdb_id, type=media_type, title=title)
     session.add(subscription)
     session.commit()
+    parsed = parse_release(release_title)
     release = SubscriptionRelease(
         subscription_id=subscription.id,
         release_title=release_title,
@@ -41,6 +43,9 @@ def sourced_job(
         leechers=0,
         download_url=f"magnet:?{release_title}",
         fingerprint=f"fingerprint:{release_title}",
+        resolution=parsed["resolution"],
+        audio=parsed["audio"],
+        hdr=parsed["hdr"],
     )
     session.add(release)
     session.commit()
@@ -170,6 +175,9 @@ def test_record_organized_quality_replaces_only_a_strictly_better_baseline():
             leechers=0,
             download_url="magnet:?worse",
             fingerprint="fingerprint:worse",
+            resolution="1080p",
+            audio="5.1",
+            hdr="hdr",
         )
         session.add(worse_release)
         session.commit()
@@ -253,3 +261,97 @@ def test_record_organized_quality_allows_multiple_episode_targets_and_ignores_pr
         assert {tuple(record.quality_score) for record in session.exec(select(DownloadedQuality)).all()} == {
             (4, 4, 5)
         }
+
+
+def test_record_organized_quality_uses_sourced_normalized_metadata_and_size():
+    engine = make_engine()
+    with Session(engine) as session:
+        _, release, job = sourced_job(
+            session,
+            media_type=MediaType.MOVIE,
+            title="The Matrix",
+            release_title="The.Matrix.1999.1080p",
+        )
+        release.resolution = "2160p"
+        release.audio = "atmos"
+        release.hdr = "dolby_vision"
+        release.size_bytes = 12_345
+        job.release_title = "not parseable as a release title"
+        session.add_all([release, job])
+        session.commit()
+
+        baseline = record_organized_quality(session, job)[0]
+
+        assert (baseline.resolution, baseline.audio, baseline.hdr, baseline.size_bytes) == (
+            "2160p",
+            "atmos",
+            "dolby_vision",
+            12_345,
+        )
+        assert baseline.quality_score == [4, 4, 5]
+
+
+def test_record_organized_quality_omits_unparseable_durable_observation():
+    engine = make_engine()
+    with Session(engine) as session:
+        _, release, job = sourced_job(
+            session,
+            media_type=MediaType.MOVIE,
+            title="The Matrix",
+            release_title="The.Matrix.1999.2160p.Atmos.DV",
+        )
+        release.resolution = "not-a-resolution"
+        release.audio = "not-an-audio-format"
+        release.hdr = "not-an-hdr-format"
+        release.size_bytes = 0
+        session.add(release)
+        session.commit()
+
+        assert record_organized_quality(session, job) == []
+        assert session.exec(select(DownloadedQuality)).all() == []
+
+
+def test_record_organized_quality_requires_a_strict_improvement_and_replays_idempotently():
+    engine = make_engine()
+    with Session(engine) as session:
+        _, _, first_job = sourced_job(
+            session,
+            media_type=MediaType.MOVIE,
+            title="The Matrix",
+            release_title="The.Matrix.1999.1080p.5.1.HDR",
+        )
+        equal_release = SubscriptionRelease(
+            subscription_id=first_job.source_subscription_id,
+            release_title="The.Matrix.1999.1080p.5.1.HDR",
+            indexer="fake",
+            size_bytes=0,
+            seeders=9,
+            leechers=0,
+            download_url="magnet:?equal",
+            fingerprint="fingerprint:equal",
+            resolution="1080p",
+            audio="5.1",
+            hdr="hdr",
+        )
+        session.add(equal_release)
+        session.commit()
+        equal_job = MediaJob(
+            type=MediaType.MOVIE,
+            title="The Matrix",
+            release_title=equal_release.release_title,
+            qbit_hash="hash:equal",
+            category="skald-movie",
+            status=JobStatus.ORGANIZED,
+            source_subscription_id=first_job.source_subscription_id,
+            source_subscription_release_id=equal_release.id,
+        )
+        session.add(equal_job)
+        session.commit()
+
+        first = record_organized_quality(session, first_job)[0]
+        equal = record_organized_quality(session, equal_job)[0]
+        replay = record_organized_quality(session, first_job)[0]
+
+        assert equal.id == first.id == replay.id
+        assert replay.media_job_id == first_job.id
+        assert len(session.exec(select(DownloadedQuality)).all()) == 1

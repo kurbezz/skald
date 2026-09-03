@@ -1,7 +1,10 @@
+from urllib.parse import urlencode
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
+from skald.auth import create_csrf_token
 from skald.main import create_app
 from skald.models import MediaSubscription, MediaType, QualityProfile
 
@@ -14,6 +17,7 @@ def _profile(session, media_type):
 
 def _quality_form(**overrides):
     values = {
+        "csrf_token": create_csrf_token(None),
         "allowed_resolutions": ["1080p"],
         "allowed_audio": [],
         "allowed_hdr": [],
@@ -49,6 +53,57 @@ def test_quality_get_creates_movie_and_tv_profiles_and_renders_both_forms(tmp_pa
         (MediaType.MOVIE, ["1080p", "2160p"], 5),
         (MediaType.TV, ["1080p", "2160p"], 5),
     ]
+
+
+def test_quality_post_rejects_missing_csrf_token_and_get_renders_usable_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "quality-csrf.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        page = client.get("/quality")
+        form = _quality_form()
+        form.pop("csrf_token")
+        rejected = client.post("/quality/movie", data=form, follow_redirects=False)
+        validation_error = client.post(
+            "/quality/movie",
+            data=_quality_form(excluded_tokens="CAM, cam"),
+            follow_redirects=False,
+        )
+
+    assert page.status_code == 200
+    assert 'type="hidden" name="csrf_token" value="' in page.text
+    assert rejected.status_code == 403
+    assert validation_error.status_code == 422
+    assert f'name="csrf_token" value="{create_csrf_token(None)}"' in validation_error.text
+
+
+@pytest.mark.parametrize(
+    "csrf_tokens",
+    [
+        ("invalid-token", create_csrf_token(None)),
+        (create_csrf_token(None), "invalid-token"),
+    ],
+)
+def test_quality_post_rejects_duplicate_csrf_tokens_without_mutating_profile(
+    tmp_path, monkeypatch, csrf_tokens
+):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "quality-duplicate-csrf.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        client.get("/quality")
+        with Session(app.state.engine) as session:
+            movie_before = _profile(session, MediaType.MOVIE).model_dump()
+        response = client.post(
+            "/quality/movie",
+            content=urlencode(_quality_form(csrf_token=csrf_tokens), doseq=True),
+            headers={"content-type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 403
+    with Session(app.state.engine) as session:
+        assert _profile(session, MediaType.MOVIE).model_dump() == movie_before
 
 
 def test_quality_post_normalizes_and_updates_only_the_movie_profile(tmp_path, monkeypatch):

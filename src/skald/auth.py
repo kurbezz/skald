@@ -4,12 +4,40 @@ import secrets
 import time
 
 from fastapi import HTTPException
-from starlette.requests import HTTPConnection
+from starlette.requests import HTTPConnection, Request
 
 from skald.config import get_settings
 
 SESSION_COOKIE_NAME = "session"
 SESSION_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 days
+
+
+def create_csrf_token(session_cookie: str | None) -> str:
+    """Create a stateless token bound to the browser's current session cookie."""
+    session_binding = session_cookie or ""
+    payload = f"csrf:{session_binding}"
+    settings = get_settings()
+    return hmac.new(
+        settings.secret_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
+def verify_csrf_token(session_cookie: str | None, token: str | None) -> bool:
+    """Return whether *token* is the current session's CSRF token."""
+    if not isinstance(token, str) or not token:
+        return False
+
+    expected_token = create_csrf_token(session_cookie)
+    return hmac.compare_digest(token, expected_token)
+
+
+async def verify_csrf_form(request: Request) -> bool:
+    """Verify a form carries exactly one CSRF token for this session."""
+    tokens = (await request.form()).getlist("csrf_token")
+    if len(tokens) != 1 or not isinstance(tokens[0], str):
+        return False
+
+    return verify_csrf_token(request.cookies.get(SESSION_COOKIE_NAME), tokens[0])
 
 
 def create_session_cookie() -> str:

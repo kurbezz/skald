@@ -29,6 +29,7 @@ class TvPackError(Exception):
 @dataclass(frozen=True)
 class LinkFileResult:
     attempt_owned: bool
+    identity: FileIdentity
 
 
 class LinkFileError(OSError):
@@ -439,8 +440,13 @@ def link_file(source: Path, target: Path) -> LinkFileResult:
         error.explicitly_unowned = True
         raise error
     try:
+        # A hard link is guaranteed to share its source inode. Capture that
+        # identity immediately before creation instead of inspecting target
+        # afterwards, when a concurrent replacement could be mistaken for
+        # this attempt's file.
+        source_identity = file_identity(source)
         os.link(source, target)
-        return LinkFileResult(attempt_owned=True)
+        return LinkFileResult(attempt_owned=True, identity=source_identity)
     except OSError as exc:
         if exc.errno != errno.EXDEV:
             exc.attempt_owned = False
@@ -476,7 +482,11 @@ def link_file(source: Path, target: Path) -> LinkFileResult:
             cleanup_error,
             explicitly_unowned=created_identity is None and write_error.errno == errno.EEXIST,
         ) from write_error
-    return LinkFileResult(attempt_owned=True)
+    assert created_identity is not None
+    return LinkFileResult(
+        attempt_owned=True,
+        identity=FileIdentity(device=created_identity[0], inode=created_identity[1]),
+    )
 
 
 def prune_empty_parent(path: Path) -> None:

@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import select
 
+from skald.auth import SESSION_COOKIE_NAME, create_csrf_token, verify_csrf_form
 from skald.db import get_session
 from skald.models import (
     NotificationDeliveryAttempt,
@@ -63,11 +64,21 @@ async def list_events(request: Request):
         for event in events
         if event.id is not None
     ]
-    return templates.TemplateResponse(request, "events.html", {"event_rows": event_rows})
+    return templates.TemplateResponse(
+        request,
+        "events.html",
+        {
+            "event_rows": event_rows,
+            "csrf_token": create_csrf_token(request.cookies.get(SESSION_COOKIE_NAME)),
+        },
+    )
 
 
 @router.post("/events/{event_id}/read")
 async def mark_event_read(request: Request, event_id: int):
+    if not await verify_csrf_form(request):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
     with get_session(request.app.state.engine) as session:
         event = session.get(SubscriptionEvent, event_id)
         if event is None:

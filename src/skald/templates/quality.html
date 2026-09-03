@@ -11,6 +11,7 @@
 {% for media_type, persisted_profile in profiles %}
 {% set profile = submitted if submitted and submitted.media_type == media_type.value else persisted_profile %}
 <form method="post" action="/quality/{{ media_type.value }}" class="quality-form panel">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="quality-section-head">
     <h2>{{ "Movie" if media_type.value == "movie" else "TV" }} profile</h2>
     <p>These settings only apply to new {{ media_type.value }} releases.</p>
