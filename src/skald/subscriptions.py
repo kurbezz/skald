@@ -237,6 +237,8 @@ async def scan_due_subscriptions(
                             media_type=MediaType.MOVIE,
                             title=durable_subscription.title,
                             year=durable_subscription.year,
+                            source_subscription_id=durable_subscription.id,
+                            source_subscription_release_id=selected_row.id,
                             settings=settings,
                         )
                         created_job = True
@@ -266,6 +268,8 @@ async def scan_due_subscriptions(
                                 episode=target_episodes[0],
                                 episode_set=serialize_episode_set(target_episodes),
                                 target_episode_numbers=target_episodes,
+                                source_subscription_id=durable_subscription.id,
+                                source_subscription_release_id=selected_row.id,
                                 settings=settings,
                             )
                             created_job = True

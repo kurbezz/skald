@@ -39,6 +39,7 @@ from skald.organizer import (
 )
 from skald.qbittorrent import QbittorrentClient
 from skald.quality import default_quality_profile
+from skald.services.downloaded_quality import record_organized_quality
 from skald.subscriptions import scan_due_subscriptions
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,7 @@ def organize_job(session: Session, job: MediaJob, movies_root: str, tv_root: str
     job.status = JobStatus.ORGANIZED
     session.add(job)
     session.commit()
+    _record_downloaded_quality(session, job.id)
 
 
 def _conditional_organizing_write(session: Session, job_id: int, **values) -> bool:
@@ -474,7 +476,19 @@ def _finalize_tv_pack_job(
     )
     if result.rowcount == 1:
         session.commit()
+        _record_downloaded_quality(session, job_id)
     else:
+        session.rollback()
+
+
+def _record_downloaded_quality(session: Session, job_id: int) -> None:
+    """Keep baseline persistence best-effort after organization is durable."""
+    try:
+        job = session.get(MediaJob, job_id, populate_existing=True)
+        if job is not None:
+            record_organized_quality(session, job)
+    except Exception:  # noqa: BLE001 - a baseline must never undo organization
+        logger.exception("could not record downloaded quality for job %s", job_id)
         session.rollback()
 
 

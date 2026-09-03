@@ -12,6 +12,7 @@ from skald.db import get_engine, migrate_schema
 from skald.config import Settings
 from skald.models import (
     FileLifecycle,
+    DownloadedQuality,
     JobStatus,
     MediaJob,
     MediaSubscription,
@@ -19,12 +20,14 @@ from skald.models import (
     OrganizationMode,
     OrganizedFile,
     TvSubscriptionScope,
+    SubscriptionRelease,
 )
 from skald.qbittorrent import TorrentFile, TorrentStatus
 from skald.indexer.base import ReleaseResult
 from skald.subscriptions import scan_due_subscriptions
 from skald.worker import (
     DeletionOutcome,
+    organize_job,
     poll_once,
     reconcile_deleting_job,
     reconcile_organizing_job,
@@ -427,10 +430,27 @@ async def test_poll_once_organizes_completed_movie(tmp_path):
     (content_dir / "movie.mkv").write_text("data")
 
     with Session(engine) as session:
+        subscription = MediaSubscription(tmdb_id=603, type=MediaType.MOVIE, title="The Matrix")
+        session.add(subscription)
+        session.commit()
+        release = SubscriptionRelease(
+            subscription_id=subscription.id,
+            release_title="The.Matrix.1999",
+            indexer="fake",
+            size_bytes=0,
+            seeders=5,
+            leechers=0,
+            download_url="magnet:?matrix",
+            fingerprint="organized-matrix",
+        )
+        session.add(release)
+        session.commit()
         session.add(MediaJob(
             type=MediaType.MOVIE, title="The Matrix", year=1999,
             release_title="The.Matrix.1999", qbit_hash="hash1",
             category="skald-movie", status=JobStatus.DOWNLOADING,
+            source_subscription_id=subscription.id,
+            source_subscription_release_id=release.id,
         ))
         session.commit()
 
@@ -451,9 +471,40 @@ async def test_poll_once_organizes_completed_movie(tmp_path):
         assert refreshed.library_path == str(
             movies_root / "The Matrix (1999)" / "The Matrix (1999).mkv"
         )
+        baseline = session.exec(select(DownloadedQuality)).one()
+        assert baseline.target_key == "movie:tmdb:603"
 
     target = movies_root / "The Matrix (1999)" / "The Matrix (1999).mkv"
     assert target.exists()
+
+
+def test_manual_organized_job_stays_organized_when_baseline_recording_fails(tmp_path, monkeypatch):
+    engine = make_engine()
+    content_dir = tmp_path / "downloads" / "Film"
+    content_dir.mkdir(parents=True)
+    (content_dir / "film.mkv").write_text("data")
+    with Session(engine) as session:
+        job = MediaJob(
+            type=MediaType.MOVIE,
+            title="Film",
+            year=2026,
+            release_title="Film.2026.1080p",
+            qbit_hash="hash",
+            category="skald-movie",
+            status=JobStatus.COMPLETED,
+            content_path=str(content_dir),
+        )
+        session.add(job)
+        session.commit()
+
+        def fail_recording(session, job):
+            raise RuntimeError("baseline storage unavailable")
+
+        monkeypatch.setattr("skald.worker.record_organized_quality", fail_recording)
+        organize_job(session, job, str(tmp_path / "movies"), str(tmp_path / "tv"))
+
+        assert session.get(MediaJob, job.id).status is JobStatus.ORGANIZED
+        assert session.exec(select(DownloadedQuality)).all() == []
 
 
 async def test_poll_once_organizes_completed_tv_episode(tmp_path):
@@ -564,10 +615,27 @@ async def test_poll_once_organizes_all_episodes_in_tv_pack(tmp_path):
     (nested / "Show.srt").write_text("subtitle")
 
     with Session(engine) as session:
+        subscription = MediaSubscription(tmdb_id=1, type=MediaType.TV, title="Show")
+        session.add(subscription)
+        session.commit()
+        release = SubscriptionRelease(
+            subscription_id=subscription.id,
+            release_title="Show.S01.1080p",
+            indexer="fake",
+            size_bytes=0,
+            seeders=5,
+            leechers=0,
+            download_url="magnet:?show-pack",
+            fingerprint="organized-show-pack",
+        )
+        session.add(release)
+        session.commit()
         session.add(MediaJob(
-            type=MediaType.TV, title="Show", release_title="Show.S01",
+            type=MediaType.TV, title="Show", release_title="Show.S01.1080p",
             episode_set="[1,2,3,4,5,6]", qbit_hash="hash", category="skald-tv",
             status=JobStatus.DOWNLOADING,
+            source_subscription_id=subscription.id,
+            source_subscription_release_id=release.id,
         ))
         session.commit()
     qbit = FakeQbit({
@@ -592,6 +660,49 @@ async def test_poll_once_organizes_all_episodes_in_tv_pack(tmp_path):
         assert {file.path for file in session.exec(select(OrganizedFile)).all()} == {
             str(path) for path in targets
         }
+        baseline = session.exec(select(DownloadedQuality)).one()
+        assert baseline.target_key == "tv:tmdb:1:season:1:pack"
+
+
+async def test_pack_post_commit_baseline_setup_failure_leaves_job_organized(tmp_path, monkeypatch):
+    engine = make_engine()
+    content_dir = tmp_path / "downloads" / "Show.S01"
+    content_dir.mkdir(parents=True)
+    for episode in range(1, 3):
+        (content_dir / f"Show.S01E{episode:02d}.mkv").write_text(str(episode))
+    with Session(engine) as session:
+        job = MediaJob(
+            type=MediaType.TV,
+            title="Show",
+            release_title="Show.S01.1080p",
+            qbit_hash="hash",
+            category="skald-tv",
+            status=JobStatus.DOWNLOADING,
+        )
+        session.add(job)
+        session.commit()
+        original_get = session.get
+        populate_existing_media_job_reads = 0
+
+        def fail_only_the_post_commit_baseline_lookup(model, ident, **kwargs):
+            nonlocal populate_existing_media_job_reads
+            if model is MediaJob and kwargs.get("populate_existing"):
+                populate_existing_media_job_reads += 1
+                if populate_existing_media_job_reads == 4:
+                    raise RuntimeError("baseline setup unavailable")
+            return original_get(model, ident, **kwargs)
+
+        monkeypatch.setattr(session, "get", fail_only_the_post_commit_baseline_lookup)
+        qbit = FakeQbit({
+            "hash": TorrentStatus(
+                hash="hash", progress=1.0, state="uploading",
+                content_path=str(content_dir), save_path=str(tmp_path / "downloads"),
+            )
+        })
+        await poll_once(session, qbit, str(tmp_path / "movies"), str(tmp_path / "tv"))
+
+    with Session(engine) as session:
+        assert session.exec(select(MediaJob)).one().status is JobStatus.ORGANIZED
 
 
 async def test_pack_fence_reservation_commits_before_staging_is_visible_to_other_sessions(

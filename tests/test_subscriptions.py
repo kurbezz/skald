@@ -11,6 +11,8 @@ from skald.indexer.base import ReleaseResult
 from skald.config import Settings
 from skald.main import create_app
 from skald.models import (
+    DownloadedQuality,
+    JobStatus,
     MediaJob,
     MediaSubscription,
     MediaType,
@@ -429,7 +431,10 @@ async def test_auto_download_persists_discoveries_then_grabs_highest_seed_matchi
     selected = session.get(SubscriptionRelease, subscription.auto_grabbed_release_id)
     assert qbit.add_calls == [("magnet:?best", "skald-movie")]
     assert selected.release_title == "Movie.2026.2160p.WEB"
-    assert len(session.exec(select(MediaJob)).all()) == 1
+    job = session.exec(select(MediaJob)).one()
+    assert (job.source_subscription_id, job.source_subscription_release_id) == (
+        subscription.id, selected.id
+    )
 
 
 async def test_auto_download_never_grabs_tv(session):
@@ -504,6 +509,9 @@ async def test_scoped_tv_auto_download_persists_matching_scope_and_grabs_only_re
     job = session.exec(select(MediaJob)).one()
     assert (job.type, job.season, job.episode, job.episode_set) == (
         MediaType.TV, 1, 3, "[3]"
+    )
+    assert (job.source_subscription_id, job.source_subscription_release_id) == (
+        subscription.id, releases[0].id
     )
     assert subscription.auto_grabbed_release_id == releases[0].id
 
@@ -807,6 +815,72 @@ def test_subscription_actions_toggle_schedule_read_delete_and_404(client, app):
 
     for action in ("toggle", "releases/read", "delete"):
         assert client.post(f"/subscriptions/999/{action}", follow_redirects=False).status_code == 404
+
+
+def test_delete_subscription_keeps_sourced_job_and_baseline_after_clearing_references(client, app):
+    with Session(app.state.engine) as database_session:
+        subscription = MediaSubscription(
+            tmdb_id=603, type=MediaType.MOVIE, title="The Matrix", auto_download=True
+        )
+        database_session.add(subscription)
+        database_session.commit()
+        release = SubscriptionRelease(
+            subscription_id=subscription.id,
+            release_title="The.Matrix.1999.2160p",
+            indexer="fake",
+            size_bytes=1,
+            seeders=9,
+            leechers=0,
+            download_url="magnet:?matrix",
+            fingerprint="delete-sourced-release",
+        )
+        database_session.add(release)
+        database_session.commit()
+        subscription.auto_grabbed_release_id = release.id
+        job = MediaJob(
+            type=MediaType.MOVIE,
+            title="The Matrix",
+            year=1999,
+            release_title=release.release_title,
+            qbit_hash="matrix-hash",
+            category="skald-movie",
+            status=JobStatus.ORGANIZED,
+            source_subscription_id=subscription.id,
+            source_subscription_release_id=release.id,
+        )
+        database_session.add(job)
+        database_session.commit()
+        baseline = DownloadedQuality(
+            media_type=MediaType.MOVIE,
+            target_key="movie:tmdb:603",
+            subscription_id=subscription.id,
+            media_job_id=job.id,
+            resolution="2160p",
+            audio="atmos",
+            hdr="dolby_vision",
+            score_version="v1",
+            quality_score=[4, 4, 5],
+        )
+        database_session.add(baseline)
+        database_session.commit()
+        subscription_id, release_id, job_id, baseline_id = (
+            subscription.id,
+            release.id,
+            job.id,
+            baseline.id,
+        )
+
+    assert client.post(f"/subscriptions/{subscription_id}/delete", follow_redirects=False).status_code == 303
+
+    with Session(app.state.engine) as database_session:
+        assert database_session.get(MediaSubscription, subscription_id) is None
+        assert database_session.get(SubscriptionRelease, release_id) is None
+        job = database_session.get(MediaJob, job_id)
+        baseline = database_session.get(DownloadedQuality, baseline_id)
+        assert job is not None
+        assert (job.source_subscription_id, job.source_subscription_release_id) == (None, None)
+        assert baseline is not None
+        assert (baseline.subscription_id, baseline.media_job_id) == (None, job_id)
 
 
 def test_tv_subscription_detail_and_season_routes(client, app, captured_templates):

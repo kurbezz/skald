@@ -204,14 +204,15 @@ class SubscriptionRelease(SQLModel, table=True):
 class DownloadedQuality(SQLModel, table=True):
     __table_args__ = (
         UniqueConstraint("media_type", "target_key", name="uq_downloaded_quality_target"),
-        UniqueConstraint("media_job_id", name="uq_downloaded_quality_job"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     media_type: MediaType
     target_key: str
-    subscription_id: Optional[int] = Field(default=None, foreign_key="mediasubscription.id", index=True)
-    media_job_id: int = Field(foreign_key="mediajob.id", index=True)
+    subscription_id: Optional[int] = Field(
+        default=None, foreign_key="mediasubscription.id", ondelete="CASCADE", index=True
+    )
+    media_job_id: int = Field(foreign_key="mediajob.id", ondelete="CASCADE", index=True)
     resolution: str
     audio: str
     hdr: str

@@ -95,6 +95,75 @@ def _rebuild_organizedfile(connection) -> None:
         raise
 
 
+def _downloadedquality_requires_rebuild(connection) -> bool:
+    columns = {
+        column[1]
+        for column in connection.exec_driver_sql("PRAGMA table_info(downloadedquality)").fetchall()
+    }
+    required_columns = {
+        "id", "media_type", "target_key", "subscription_id", "media_job_id", "resolution",
+        "audio", "hdr", "size_bytes", "score_version", "quality_score", "recorded_at", "updated_at",
+    }
+    if not required_columns.issubset(columns):
+        return True
+    foreign_keys = connection.exec_driver_sql("PRAGMA foreign_key_list(downloadedquality)").fetchall()
+    required_foreign_keys = {
+        ("mediajob", "media_job_id", "id"),
+        ("mediasubscription", "subscription_id", "id"),
+    }
+    if {
+        (key[2], key[3], key[4]) for key in foreign_keys if key[6] == "CASCADE"
+    } != required_foreign_keys:
+        return True
+    has_target_unique = False
+    for index in connection.exec_driver_sql("PRAGMA index_list(downloadedquality)").fetchall():
+        index_columns = [
+            column[2]
+            for column in connection.exec_driver_sql(f"PRAGMA index_info({index[1]})").fetchall()
+        ]
+        if index[2] and index_columns == ["media_job_id"]:
+            return True
+        if index[2] and index_columns == ["media_type", "target_key"]:
+            has_target_unique = True
+    return not has_target_unique
+
+
+def _rebuild_downloadedquality(connection) -> None:
+    old_columns = {
+        column[1]
+        for column in connection.exec_driver_sql("PRAGMA table_info(downloadedquality)").fetchall()
+    }
+    required_columns = (
+        "id", "media_type", "target_key", "subscription_id", "media_job_id", "resolution",
+        "audio", "hdr", "size_bytes", "score_version", "quality_score", "recorded_at", "updated_at",
+    )
+    if not set(required_columns).issubset(old_columns):
+        raise RuntimeError("Cannot rebuild downloaded quality table with missing baseline columns")
+    try:
+        connection.exec_driver_sql(
+            "CREATE TABLE downloadedquality_new ("
+            "id INTEGER NOT NULL PRIMARY KEY, media_type VARCHAR NOT NULL, target_key VARCHAR NOT NULL, "
+            "subscription_id INTEGER REFERENCES mediasubscription(id) ON DELETE CASCADE, "
+            "media_job_id INTEGER NOT NULL REFERENCES mediajob(id) ON DELETE CASCADE, "
+            "resolution VARCHAR NOT NULL, audio VARCHAR NOT NULL, hdr VARCHAR NOT NULL, size_bytes INTEGER, "
+            "score_version VARCHAR NOT NULL, quality_score JSON NOT NULL, recorded_at DATETIME NOT NULL, "
+            "updated_at DATETIME NOT NULL, "
+            "CONSTRAINT uq_downloaded_quality_target UNIQUE (media_type, target_key))"
+        )
+        columns = ", ".join(required_columns)
+        connection.exec_driver_sql(
+            f"INSERT INTO downloadedquality_new ({columns}) SELECT {columns} FROM downloadedquality"
+        )
+        connection.exec_driver_sql("DROP TABLE downloadedquality")
+        connection.exec_driver_sql("ALTER TABLE downloadedquality_new RENAME TO downloadedquality")
+    except Exception:
+        try:
+            connection.exec_driver_sql("DROP TABLE IF EXISTS downloadedquality_new")
+        except Exception:
+            pass
+        raise
+
+
 _DEFAULT_RESOLUTIONS = ["1080p", "2160p"]
 _DEFAULT_EXCLUDED_TOKENS = ["CAM", "TS", "TeleSync"]
 _RESOLUTION_ALIASES = {
@@ -314,6 +383,7 @@ def migrate_schema(engine) -> None:
             with engine.begin() as connection:
                 _recover_shadow_table(connection, "qualityprofile_new", "qualityprofile")
                 _recover_shadow_table(connection, "organizedfile_new", "organizedfile")
+                _recover_shadow_table(connection, "downloadedquality_new", "downloadedquality")
         except Exception:
             pass
         raise
@@ -377,16 +447,20 @@ def _migrate_schema(engine) -> None:
             if release_columns and column not in release_column_names:
                 connection.exec_driver_sql(f"ALTER TABLE subscriptionrelease ADD COLUMN {column} VARCHAR")
 
-        connection.exec_driver_sql(
-            "CREATE TABLE IF NOT EXISTS downloadedquality ("
-            "id INTEGER NOT NULL PRIMARY KEY, media_type VARCHAR NOT NULL, target_key VARCHAR NOT NULL, "
-            "subscription_id INTEGER REFERENCES mediasubscription(id), "
-            "media_job_id INTEGER NOT NULL REFERENCES mediajob(id), resolution VARCHAR NOT NULL, "
-            "audio VARCHAR NOT NULL, hdr VARCHAR NOT NULL, size_bytes INTEGER, score_version VARCHAR NOT NULL, "
-            "quality_score JSON NOT NULL, recorded_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, "
-            "CONSTRAINT uq_downloaded_quality_target UNIQUE (media_type, target_key), "
-            "CONSTRAINT uq_downloaded_quality_job UNIQUE (media_job_id))"
-        )
+        downloadedquality_exists = _table_exists(connection, "downloadedquality")
+        if not downloadedquality_exists:
+            connection.exec_driver_sql(
+                "CREATE TABLE downloadedquality ("
+                "id INTEGER NOT NULL PRIMARY KEY, media_type VARCHAR NOT NULL, target_key VARCHAR NOT NULL, "
+                "subscription_id INTEGER REFERENCES mediasubscription(id) ON DELETE CASCADE, "
+                "media_job_id INTEGER NOT NULL REFERENCES mediajob(id) ON DELETE CASCADE, "
+                "resolution VARCHAR NOT NULL, audio VARCHAR NOT NULL, hdr VARCHAR NOT NULL, size_bytes INTEGER, "
+                "score_version VARCHAR NOT NULL, quality_score JSON NOT NULL, recorded_at DATETIME NOT NULL, "
+                "updated_at DATETIME NOT NULL, "
+                "CONSTRAINT uq_downloaded_quality_target UNIQUE (media_type, target_key))"
+            )
+        elif _downloadedquality_requires_rebuild(connection):
+            _rebuild_downloadedquality(connection)
         connection.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_downloadedquality_subscription_id "
             "ON downloadedquality (subscription_id)"

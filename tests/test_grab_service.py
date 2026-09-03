@@ -3,7 +3,7 @@ from sqlmodel import Session, SQLModel
 from skald.config import Settings
 from skald.db import get_engine
 from skald.indexer.base import ReleaseResult
-from skald.models import MediaType
+from skald.models import MediaSubscription, MediaType, SubscriptionRelease
 import pytest
 
 from skald.qbittorrent import TorrentFile
@@ -61,6 +61,42 @@ def test_create_movie_job_adds_torrent_then_persists_job(tmp_path):
         assert job.qbit_hash == "fakehash"
 
     assert qbit.add_calls == [(release.download_url, settings.category_movie)]
+
+
+def test_create_media_job_persists_optional_subscription_provenance_and_leaves_manual_null(tmp_path):
+    engine = get_engine(str(tmp_path / "grab-provenance.db"))
+    SQLModel.metadata.create_all(engine)
+    release = ReleaseResult("Movie.2026.1080p", "fake", 1, 5, 0, "magnet:?one")
+
+    with Session(engine) as session:
+        subscription = MediaSubscription(tmdb_id=1, type=MediaType.MOVIE, title="Movie")
+        session.add(subscription)
+        session.commit()
+        stored_release = SubscriptionRelease(
+            subscription_id=subscription.id,
+            release_title=release.title,
+            indexer=release.indexer,
+            size_bytes=release.size_bytes,
+            seeders=release.seeders,
+            leechers=release.leechers,
+            download_url=release.download_url,
+            fingerprint="grab-provenance-release",
+        )
+        session.add(stored_release)
+        session.commit()
+        sourced = create_media_job(
+            session, RecordingQbit(), release, media_type=MediaType.MOVIE, title="Movie",
+            settings=Settings(), source_subscription_id=subscription.id,
+            source_subscription_release_id=stored_release.id,
+        )
+        manual = create_media_job(
+            session, RecordingQbit(), release, media_type=MediaType.MOVIE, title="Manual",
+            settings=Settings(),
+        )
+        assert (sourced.source_subscription_id, sourced.source_subscription_release_id) == (
+            subscription.id, stored_release.id
+        )
+        assert (manual.source_subscription_id, manual.source_subscription_release_id) == (None, None)
 
 
 def test_create_targeted_tv_job_polls_metadata_disables_other_files_then_resumes(tmp_path):

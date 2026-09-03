@@ -584,6 +584,53 @@ def test_migrate_schema_emits_event_uniqueness_indexes_and_defaults(tmp_path):
     assert "WHERE kind = 'UPGRADE_PROPOSAL'" in indexes["uq_subscriptionevent_upgrade_proposal"]
 
 
+def test_migration_rebuilds_downloaded_quality_for_multiple_targets_and_cascades_jobs(tmp_path):
+    engine = get_engine(str(tmp_path / "downloaded-quality-rebuild.db"))
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE mediasubscription (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql("INSERT INTO mediasubscription VALUES (1)")
+        connection.exec_driver_sql("CREATE TABLE mediajob (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql("INSERT INTO mediajob VALUES (2)")
+        connection.exec_driver_sql("CREATE TABLE subscriptionrelease (id INTEGER PRIMARY KEY, size_bytes INTEGER NOT NULL)")
+        connection.exec_driver_sql("INSERT INTO subscriptionrelease VALUES (3, 1)")
+        connection.exec_driver_sql(
+            "CREATE TABLE downloadedquality ("
+            "id INTEGER PRIMARY KEY, media_type VARCHAR NOT NULL, target_key VARCHAR NOT NULL, "
+            "subscription_id INTEGER REFERENCES mediasubscription(id), "
+            "media_job_id INTEGER NOT NULL REFERENCES mediajob(id), resolution VARCHAR NOT NULL, "
+            "audio VARCHAR NOT NULL, hdr VARCHAR NOT NULL, size_bytes INTEGER, score_version VARCHAR NOT NULL, "
+            "quality_score JSON NOT NULL, recorded_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, "
+            "CONSTRAINT uq_downloaded_quality_target UNIQUE (media_type, target_key), "
+            "CONSTRAINT uq_downloaded_quality_job UNIQUE (media_job_id))"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO downloadedquality VALUES "
+            "(4, 'TV', 'tv:tmdb:1:season:1:episode:1', 1, 2, '1080p', '5.1', 'hdr', "
+            "NULL, 'v1', '[3,2,2]', '2026-09-03T00:00:00', '2026-09-03T00:00:00')"
+        )
+
+    migrate_schema(engine)
+    migrate_schema(engine)
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO downloadedquality "
+            "(media_type, target_key, subscription_id, media_job_id, resolution, audio, hdr, size_bytes, "
+            "score_version, quality_score, recorded_at, updated_at) VALUES "
+            "('TV', 'tv:tmdb:1:season:1:episode:2', 1, 2, '1080p', '5.1', 'hdr', "
+            "NULL, 'v1', '[3,2,2]', '2026-09-03T00:00:00', '2026-09-03T00:00:00')"
+        )
+        ddl = connection.exec_driver_sql(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'downloadedquality'"
+        ).scalar()
+        connection.exec_driver_sql("DELETE FROM mediajob WHERE id = 2")
+        remaining = connection.exec_driver_sql("SELECT COUNT(*) FROM downloadedquality").scalar()
+
+    assert "UNIQUE (media_job_id)" not in ddl
+    assert "media_job_id INTEGER NOT NULL REFERENCES mediajob(id) ON DELETE CASCADE" in ddl
+    assert remaining == 0
+
+
 def test_migration_cleans_both_shadow_tables_after_failure_and_retry_preserves_data(tmp_path, monkeypatch):
     engine = get_engine(str(tmp_path / "migration-recovery.db"))
     with engine.begin() as connection:
@@ -736,9 +783,7 @@ def test_quality_and_event_schema_constraints_reject_duplicate_contracts(tmp_pat
             resolution="1080p", audio="5.1", hdr="hdr", size_bytes=None,
             score_version="v1", quality_score=[3, 2, 2],
         ))
-        with pytest.raises(IntegrityError):
-            session.commit()
-        session.rollback()
+        session.commit()
 
         session.add(DownloadedQuality(
             media_type=MediaType.MOVIE, target_key="movie:tmdb:1", media_job_id=other_job.id,

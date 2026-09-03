@@ -1,13 +1,15 @@
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from skald.db import get_session
 from skald.models import (
     MediaSubscription,
+    DownloadedQuality,
+    MediaJob,
     MediaType,
     SubscriptionRelease,
     TvSubscriptionScope,
@@ -239,6 +241,26 @@ async def mark_releases_read(request: Request, subscription_id: int):
 async def delete_subscription(request: Request, subscription_id: int):
     with get_session(request.app.state.engine) as session:
         subscription = _subscription_or_404(session, subscription_id)
+        release_ids = session.exec(
+            select(SubscriptionRelease.id).where(
+                SubscriptionRelease.subscription_id == subscription_id
+            )
+        ).all()
+        subscription.auto_grabbed_release_id = None
+        session.add(subscription)
+        session.execute(
+            update(MediaJob)
+            .where(
+                (MediaJob.source_subscription_id == subscription_id)
+                | (MediaJob.source_subscription_release_id.in_(release_ids))
+            )
+            .values(source_subscription_id=None, source_subscription_release_id=None)
+        )
+        session.execute(
+            update(DownloadedQuality)
+            .where(DownloadedQuality.subscription_id == subscription_id)
+            .values(subscription_id=None)
+        )
         session.execute(
             delete(SubscriptionRelease).where(SubscriptionRelease.subscription_id == subscription_id)
         )

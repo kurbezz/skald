@@ -55,6 +55,8 @@ def create_media_job(
     episode: int | None = None,
     episode_set: str | None = None,
     target_episode_numbers: Sequence[int] | None = None,
+    source_subscription_id: int | None = None,
+    source_subscription_release_id: int | None = None,
     settings: Settings,
     metadata_poll_attempts: int = 10,
     metadata_poll_interval_seconds: float = 1.0,
@@ -94,6 +96,8 @@ def create_media_job(
         qbit_hash=torrent_hash,
         category=category,
         status=JobStatus.QUEUED,
+        source_subscription_id=source_subscription_id,
+        source_subscription_release_id=source_subscription_release_id,
     )
     session.add(job)
     session.commit()
