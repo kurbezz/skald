@@ -222,7 +222,7 @@ def organize_tv_pack(
             return
 
         try:
-            mappings = build_tv_pack_targets(tv_root, job.title, video_files)
+            mappings = build_tv_pack_targets(tv_root, job.title, video_files, job.season)
         except TvPackError as exc:
             _conditional_organizing_write(
                 session, job.id, status=JobStatus.NEEDS_ATTENTION, error_message=str(exc)

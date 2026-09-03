@@ -10,6 +10,7 @@ from skald.lifecycle import FileIdentity, file_identity, identity_matches
 
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".m4v"}
 EPISODE_MARKER = re.compile(r"s(\d{2})[._-]?e(\d{2})(?!\d)", re.IGNORECASE)
+EPISODE_ONLY_MARKER = re.compile(r"(?<![A-Za-z0-9])e(\d{2})(?!\d)", re.IGNORECASE)
 
 
 class TvPackError(Exception):
@@ -113,16 +114,30 @@ def tv_target_path(
     return Path(tv_root) / series / season_folder / file_name
 
 
-def build_tv_pack_targets(tv_root: str, series: str, video_files: list[Path]) -> list[tuple[Path, Path]]:
+def build_tv_pack_targets(
+    tv_root: str,
+    series: str,
+    video_files: list[Path],
+    default_season: int | None = None,
+) -> list[tuple[Path, Path]]:
     mappings = []
     targets = set()
     for source in video_files:
         markers = list(EPISODE_MARKER.finditer(source.name))
         if len(markers) > 1:
             raise TvPackError(f"Ambiguous episode markers in {source.name}")
-        if not markers:
+        if markers:
+            season, episode = (int(value) for value in markers[0].groups())
+        elif default_season is not None:
+            episode_only_markers = list(EPISODE_ONLY_MARKER.finditer(source.name))
+            if len(episode_only_markers) > 1:
+                raise TvPackError(f"Ambiguous episode markers in {source.name}")
+            if not episode_only_markers:
+                continue
+            season = default_season
+            episode = int(episode_only_markers[0].group(1))
+        else:
             continue
-        season, episode = (int(value) for value in markers[0].groups())
         target = tv_target_path(tv_root, series, season, episode, source.suffix)
         if target in targets:
             raise TvPackError(f"Duplicate target path: {target}")

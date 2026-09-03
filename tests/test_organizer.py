@@ -60,6 +60,40 @@ def test_build_tv_pack_targets_accepts_supported_episode_markers(tmp_path, name,
     ]
 
 
+def test_build_tv_pack_targets_falls_back_to_default_season_for_episode_only_markers(tmp_path):
+    source = tmp_path / "Mediator.e01.2021.WEB-DL.(1080p).Getty.mkv"
+    source.write_text("data")
+
+    assert build_tv_pack_targets(str(tmp_path / "tv"), "Mediator", [source], 1) == [
+        (source, tv_target_path(str(tmp_path / "tv"), "Mediator", 1, 1, ".mkv"))
+    ]
+
+
+def test_build_tv_pack_targets_ignores_episode_only_markers_without_default_season(tmp_path):
+    source = tmp_path / "Mediator.e01.2021.WEB-DL.(1080p).Getty.mkv"
+    source.write_text("data")
+
+    with pytest.raises(TvPackError, match="No video files with SxxEyy"):
+        build_tv_pack_targets(str(tmp_path / "tv"), "Mediator", [source])
+
+
+def test_build_tv_pack_targets_rejects_ambiguous_episode_only_markers(tmp_path):
+    source = tmp_path / "Show.e01.e02.mkv"
+    source.write_text("data")
+
+    with pytest.raises(TvPackError, match="Ambiguous episode markers"):
+        build_tv_pack_targets(str(tmp_path / "tv"), "Show", [source], 1)
+
+
+def test_build_tv_pack_targets_prefers_full_marker_over_episode_only(tmp_path):
+    source = tmp_path / "Show.S02E05.mkv"
+    source.write_text("data")
+
+    assert build_tv_pack_targets(str(tmp_path / "tv"), "Show", [source], 1) == [
+        (source, tv_target_path(str(tmp_path / "tv"), "Show", 2, 5, ".mkv"))
+    ]
+
+
 def test_build_tv_pack_targets_rejects_ambiguous_and_missing_markers(tmp_path):
     ambiguous = tmp_path / "Show.S01E01.S01E02.mkv"
     unmarked = tmp_path / "Show.episode.mkv"
