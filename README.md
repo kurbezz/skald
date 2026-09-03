@@ -19,9 +19,45 @@ your `.env`:
     TMDB_READ_ACCESS_TOKEN=<your TMDB API Read Access Token>
 
 Subscriptions check for releases every 6 hours by default. Set
-`SUBSCRIPTION_CHECK_INTERVAL_SECONDS` to use a different interval.
-Subscriptions only report matching releases; they do not automatically start
-or download anything.
+`SUBSCRIPTION_CHECK_INTERVAL_SECONDS` to use a different interval. By default
+they record matching releases and events. The existing per-subscription
+auto-download option remains available for matching movies and scoped TV
+subscriptions; it is separate from quality upgrade proposals.
+
+### Quality profiles, events, and notifications
+
+Skald has two global, independently editable quality profiles: one for movies
+and one for TV. Both default to allowing `1080p` and `2160p`, requiring at
+least five seeders, and excluding `CAM`, `TS`, and `TeleSync`. Parsed
+resolution, audio, and HDR values that are absent, ambiguous, malformed, or
+unsupported are recorded as `unknown`. An `unknown` value is allowed when its
+dimension is unrestricted, but does not pass a configured hard restriction for
+that dimension.
+
+Eligible new releases create events. A strictly better release than the
+quality baseline recorded after a successful, source-backed organization also
+creates an upgrade proposal. Proposals are review-only: they never
+automatically replace or delete media, and never automatically download the
+upgrade. Use the normal Search/Grab flow if you choose to acquire one. Existing
+auto-download behavior is otherwise unchanged.
+
+Baselines are recorded only for successfully organized, source-backed
+subscription downloads. Historical, manual, and unscoped media are not
+backfilled or inferred into baselines.
+
+Telegram and SMTP email are optional server-side provider settings. Configure
+only the channel(s) you want; a channel with incomplete configuration is
+skipped. Delivery is best effort: each event/channel is attempted once, with
+no retry and no guaranteed delivery.
+
+    TELEGRAM_BOT_TOKEN=<bot token>
+    TELEGRAM_CHAT_ID=<chat ID>
+    SMTP_HOST=<SMTP host>
+    SMTP_PORT=587
+    SMTP_USERNAME=<SMTP username>
+    SMTP_PASSWORD=<SMTP password>
+    SMTP_FROM=<sender@example.com>
+    SMTP_TO=<recipient@example.com>
 
 The required TMDB attribution is displayed in the subscriptions page: “This
 product uses the TMDB API but is not endorsed or certified by TMDB.”
@@ -89,6 +125,10 @@ First-run setup:
        JACKETT_API_KEY=<key from step 3>
        QBIT_USER=admin
        QBIT_PASS=<password from step 1>
+
+   Optional Telegram/SMTP provider settings use the same eight variables
+   listed above. Keep credentials in the top-level `.env`; Compose passes them
+   through to the Skald service without storing secrets in the compose file.
 
 5. Restart skald to pick up the new `.env` values:
 

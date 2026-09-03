@@ -43,6 +43,15 @@ services:
       - MOVIES_LIBRARY_PATH=/library/movies
       - TV_LIBRARY_PATH=/library/tv
       - DB_PATH=/data/skald.db
+      # Optional notification provider settings from the top-level .env.
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - SMTP_TO=${SMTP_TO:-}
     volumes:
       # Same host path as qbittorrent's /downloads so qBittorrent's reported
       # content_path resolves inside the skald container too. Movies/library

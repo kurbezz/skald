@@ -20,7 +20,13 @@ def test_settings_defaults(monkeypatch):
     assert settings.tmdb_read_access_token == ""
     assert settings.subscription_check_interval_seconds == 21_600
     assert settings.telegram_bot_token == ""
+    assert settings.telegram_chat_id == ""
+    assert settings.smtp_host == ""
     assert settings.smtp_port == 587
+    assert settings.smtp_username == ""
+    assert settings.smtp_password == ""
+    assert settings.smtp_from == ""
+    assert settings.smtp_to == ""
 
 
 def test_settings_reads_env(monkeypatch):
