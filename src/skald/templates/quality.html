@@ -1,71 +1,102 @@
 {% extends "base.html" %}
 {% block title %}Quality — Skald{% endblock %}
 {% block content %}
-{% set quality = profile or quality_profile %}
 <div class="page-head">
   <div>
     <h1>Quality<span class="accent-dot">.</span></h1>
-    <p class="page-sub">Set the release baseline used by automatic movie downloads.</p>
+    <p class="page-sub">Set separate release rules for movies and TV. Empty allowed lists leave that quality detail unrestricted.</p>
   </div>
 </div>
 
-{% if error %}
-<div class="alert alert-error" role="alert">{{ error }}</div>
-{% endif %}
+{% for media_type, persisted_profile in profiles %}
+{% set profile = submitted if submitted and submitted.media_type == media_type.value else persisted_profile %}
+<form method="post" action="/quality/{{ media_type.value }}" class="quality-form panel">
+  <div class="quality-section-head">
+    <h2>{{ "Movie" if media_type.value == "movie" else "TV" }} profile</h2>
+    <p>These settings only apply to new {{ media_type.value }} releases.</p>
+  </div>
 
-<form method="post" action="/quality" class="quality-form panel">
-  <section class="quality-section" aria-labelledby="quality-resolution-heading">
+  <section class="quality-section" aria-labelledby="{{ media_type.value }}-resolution-heading">
     <div class="quality-section-head">
-      <h2 id="quality-resolution-heading">Allowed resolution</h2>
-      <p>Only releases with one of these labels can be selected.</p>
+      <h3 id="{{ media_type.value }}-resolution-heading">Allowed resolution</h3>
+      <p>Leave every option clear to accept any recognized resolution.</p>
     </div>
     <fieldset class="quality-options">
       <legend class="visually-hidden">Allowed resolutions</legend>
+      {% for value, label, note in [("480p", "480p", "Small files"), ("720p", "720p", "HD"), ("1080p", "1080p", "Full HD"), ("2160p", "4K", "2160p")] %}
       <label class="quality-choice">
-        <input type="checkbox" name="allowed_resolutions" value="720p"{% if "720p" in quality.allowed_resolutions %} checked{% endif %}>
-        <span class="quality-choice-label">720p</span>
-        <span class="quality-choice-note">Compact</span>
+        <input type="checkbox" name="allowed_resolutions" value="{{ value }}"{% if value in profile.allowed_resolutions %} checked{% endif %}>
+        <span class="quality-choice-label">{{ label }}</span>
+        <span class="quality-choice-note">{{ note }}</span>
       </label>
-      <label class="quality-choice">
-        <input type="checkbox" name="allowed_resolutions" value="1080p"{% if "1080p" in quality.allowed_resolutions %} checked{% endif %}>
-        <span class="quality-choice-label">1080p</span>
-        <span class="quality-choice-note">Full HD</span>
-      </label>
-      <label class="quality-choice">
-        <input type="checkbox" name="allowed_resolutions" value="2160p"{% if "2160p" in quality.allowed_resolutions or "4k" in quality.allowed_resolutions %} checked{% endif %}>
-        <span class="quality-choice-label">4K</span>
-        <span class="quality-choice-note">2160p</span>
-      </label>
+      {% endfor %}
     </fieldset>
+    {% if error_field == "allowed_resolutions" and submitted and submitted.media_type == media_type.value %}<p class="alert alert-error" data-error-field="allowed_resolutions">{{ error }}</p>{% endif %}
   </section>
 
-  <section class="quality-section quality-section--split" aria-labelledby="quality-reliability-heading">
-    <div class="quality-section-head">
-      <h2 id="quality-reliability-heading">Reliability</h2>
-      <p>Prefer releases that are available now, not just listed.</p>
+  <section class="quality-section quality-section--split">
+    <div class="quality-section-head"><h3>Audio and HDR</h3><p>Leave either group clear to avoid filtering on it.</p></div>
+    <fieldset class="quality-options">
+      <legend>Allowed audio</legend>
+      {% for value in ["stereo", "5.1", "7.1", "atmos"] %}
+      <label class="quality-choice"><input type="checkbox" name="allowed_audio" value="{{ value }}"{% if value in profile.allowed_audio %} checked{% endif %}><span class="quality-choice-label">{{ value }}</span></label>
+      {% endfor %}
+    </fieldset>
+    {% if error_field == "allowed_audio" and submitted and submitted.media_type == media_type.value %}<p class="alert alert-error" data-error-field="allowed_audio">{{ error }}</p>{% endif %}
+    <fieldset class="quality-options">
+      <legend>Allowed HDR</legend>
+      {% for value, label in [("sdr", "SDR"), ("hdr", "HDR"), ("hdr10", "HDR10"), ("hdr10plus", "HDR10+"), ("dolby_vision", "Dolby Vision")] %}
+      <label class="quality-choice"><input type="checkbox" name="allowed_hdr" value="{{ value }}"{% if value in profile.allowed_hdr %} checked{% endif %}><span class="quality-choice-label">{{ label }}</span></label>
+      {% endfor %}
+    </fieldset>
+    {% if error_field == "allowed_hdr" and submitted and submitted.media_type == media_type.value %}<p class="alert alert-error" data-error-field="allowed_hdr">{{ error }}</p>{% endif %}
+  </section>
+
+  <section class="quality-section quality-section--split">
+    <div class="quality-section-head"><h3>Limits</h3><p>Use sizes only when a release must fit a known range.</p></div>
+    <label class="quality-field" for="{{ media_type.value }}-minimum-seeders"><span>Minimum seeders</span><input id="{{ media_type.value }}-minimum-seeders" type="number" name="minimum_seeders" min="0" value="{{ profile.minimum_seeders }}" required></label>
+    {% if error_field == "minimum_seeders" and submitted and submitted.media_type == media_type.value %}<p class="alert alert-error" data-error-field="minimum_seeders">{{ error }}</p>{% endif %}
+    <label class="quality-field" for="{{ media_type.value }}-minimum-size"><span>Minimum size (bytes)</span><input id="{{ media_type.value }}-minimum-size" type="number" name="minimum_size_bytes" min="0" value="{{ '' if profile.minimum_size_bytes is none else profile.minimum_size_bytes }}"></label>
+    {% if error_field == "minimum_size_bytes" and submitted and submitted.media_type == media_type.value %}<p class="alert alert-error" data-error-field="minimum_size_bytes">{{ error }}</p>{% endif %}
+    <label class="quality-field" for="{{ media_type.value }}-maximum-size"><span>Maximum size (bytes)</span><input id="{{ media_type.value }}-maximum-size" type="number" name="maximum_size_bytes" min="0" value="{{ '' if profile.maximum_size_bytes is none else profile.maximum_size_bytes }}"></label>
+    {% if error_field == "maximum_size_bytes" and submitted and submitted.media_type == media_type.value %}<p class="alert alert-error" data-error-field="maximum_size_bytes">{{ error }}</p>{% endif %}
+  </section>
+
+  <section class="quality-section">
+    <div class="quality-section-head"><h3>Exclude title tokens</h3><p>Skip releases whose title contains one of these words.</p></div>
+    {% set displayed_tokens = profile.excluded_tokens if submitted and submitted.media_type == media_type.value else profile.excluded_tokens | join(', ') %}
+    <label class="quality-field quality-field--wide" for="{{ media_type.value }}-excluded-tokens"><span>Excluded tokens</span><input id="{{ media_type.value }}-excluded-tokens" class="quality-token-input" type="text" name="excluded_tokens" value="{{ displayed_tokens }}" required><small>Separate tokens with commas. Matching is case-insensitive.</small></label>
+    {% if error_field == "excluded_tokens" and submitted and submitted.media_type == media_type.value %}<p class="alert alert-error" data-error-field="excluded_tokens">{{ error }}</p>{% endif %}
+  </section>
+
+  <section class="quality-section">
+    <div class="quality-section-head"><h3>Preference order</h3><p>Preferred qualities are considered before availability. Use commas to order each list.</p></div>
+    {% for field, label in [("preferred_resolutions", "Resolution preference"), ("preferred_audio", "Audio preference"), ("preferred_hdr", "HDR preference")] %}
+    <label class="quality-field quality-field--wide" for="{{ media_type.value }}-{{ field }}"><span>{{ label }}</span><input id="{{ media_type.value }}-{{ field }}" type="text" name="{{ field }}" value="{{ profile[field] | join(', ') }}" placeholder="Leave blank for no preference"></label>
+    {% if error_field == field and submitted and submitted.media_type == media_type.value %}<p class="alert alert-error" data-error-field="{{ field }}">{{ error }}</p>{% endif %}
+    {% endfor %}
+  </section>
+
+  <section class="quality-section">
+    <div class="quality-section-head"><h3>Preferred size bands</h3><p>Set up to 16 non-overlapping size ranges, in the order you prefer them.</p></div>
+    {% for position in range(16) %}
+    {% if submitted and submitted.media_type == media_type.value %}
+    {% set minimum = profile.preferred_size_band_min[position] if position < profile.preferred_size_band_min | length else '' %}
+    {% set maximum = profile.preferred_size_band_max[position] if position < profile.preferred_size_band_max | length else '' %}
+    {% else %}
+    {% set band = profile.preferred_size_bands[position] if position < profile.preferred_size_bands | length else none %}
+    {% set minimum = band.min_bytes if band else '' %}
+    {% set maximum = band.max_bytes if band else '' %}
+    {% endif %}
+    <div class="quality-section--split">
+      <label class="quality-field" for="{{ media_type.value }}-band-min-{{ position }}"><span class="visually-hidden">Preferred size band {{ position + 1 }} minimum</span><input id="{{ media_type.value }}-band-min-{{ position }}" type="number" name="preferred_size_band_min" min="0" value="{{ minimum }}" placeholder="Minimum bytes"></label>
+      <label class="quality-field" for="{{ media_type.value }}-band-max-{{ position }}"><span class="visually-hidden">Preferred size band {{ position + 1 }} maximum</span><input id="{{ media_type.value }}-band-max-{{ position }}" type="number" name="preferred_size_band_max" min="0" value="{{ maximum }}" placeholder="Maximum bytes"></label>
     </div>
-    <label class="quality-field" for="minimum-seeders">
-      <span>Minimum seeders</span>
-      <input id="minimum-seeders" type="number" name="minimum_seeders" min="0" value="{{ quality.minimum_seeders }}" required>
-      <small>At least this many seeders are required.</small>
-    </label>
+    {% endfor %}
+    {% if error_field == "preferred_size_bands" and submitted and submitted.media_type == media_type.value %}<p class="alert alert-error" data-error-field="preferred_size_bands">{{ error }}</p>{% endif %}
   </section>
 
-  <section class="quality-section quality-section--split" aria-labelledby="quality-exclusions-heading">
-    <div class="quality-section-head">
-      <h2 id="quality-exclusions-heading">Exclude title tokens</h2>
-      <p>Skip releases whose title contains any of these words.</p>
-    </div>
-    <label class="quality-field quality-field--wide" for="excluded-tokens">
-      <span>Excluded tokens</span>
-      <input id="excluded-tokens" class="quality-token-input" type="text" name="excluded_tokens" value="{{ quality.excluded_tokens | join(', ') }}" placeholder="CAM, TS, TeleSync" required>
-      <small>Separate tokens with commas. Matching is case-insensitive.</small>
-    </label>
-  </section>
-
-  <div class="quality-form-footer">
-    <p>Automatic downloads remain opt-in for each subscription.</p>
-    <button type="submit">Save quality profile</button>
-  </div>
+  <div class="quality-form-footer"><p>Automatic downloads remain opt-in for each subscription.</p><button type="submit">Save {{ media_type.value }} profile</button></div>
 </form>
+{% endfor %}
 {% endblock %}

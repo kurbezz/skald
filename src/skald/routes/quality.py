@@ -1,97 +1,177 @@
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from sqlmodel import Session, select
 
 from skald.db import get_session
-from skald.models import QualityProfile, _utcnow
-from skald.quality import default_quality_profile
+from skald.models import MediaType, QualityProfile, _utcnow
+from skald.quality import (
+    QualityProfileService,
+    QualityProfileValidationError,
+    default_quality_profile,
+)
 
 router = APIRouter()
-
-_RESOLUTION_ALIASES = {
-    "720p": "720p",
-    "1080p": "1080p",
-    "2160p": "2160p",
-    "4k": "2160p",
-}
+templates = Jinja2Templates(directory="src/skald/templates")
+_profile_service = QualityProfileService()
 
 
-def _profile_payload(profile: QualityProfile) -> dict:
-    return {
-        "id": profile.id,
-        "allowed_resolutions": profile.allowed_resolutions,
-        "excluded_tokens": profile.excluded_tokens,
-        "minimum_seeders": profile.minimum_seeders,
-    }
-
-
-def _get_or_create_profile(session) -> QualityProfile:
-    profile = session.get(QualityProfile, 1)
+def get_or_create_profile(session: Session, media_type: MediaType) -> QualityProfile:
+    """Return one profile for a media type, creating its compatible default if needed."""
+    profile = session.exec(
+        select(QualityProfile).where(QualityProfile.media_type == media_type)
+    ).one_or_none()
     if profile is None:
-        profile = default_quality_profile()
+        profile = default_quality_profile(media_type)
         session.add(profile)
-        session.commit()
+        session.flush()
     return profile
 
 
-def _normalize_resolutions(resolutions: list[str]) -> list[str]:
-    normalized = []
-    for resolution in resolutions:
-        value = resolution.strip().casefold()
-        if value not in _RESOLUTION_ALIASES:
-            raise HTTPException(status_code=422, detail="Invalid allowed resolution")
-        canonical = _RESOLUTION_ALIASES[value]
-        if canonical not in normalized:
-            normalized.append(canonical)
-    if not normalized:
-        raise HTTPException(status_code=422, detail="Choose at least one allowed resolution")
-    return normalized
+def _profiles(session: Session) -> list[tuple[MediaType, QualityProfile]]:
+    return [
+        (MediaType.MOVIE, get_or_create_profile(session, MediaType.MOVIE)),
+        (MediaType.TV, get_or_create_profile(session, MediaType.TV)),
+    ]
 
 
-def _normalize_excluded_tokens(tokens: str) -> list[str]:
-    normalized = []
-    seen = set()
-    for token in tokens.split(","):
-        value = token.strip()
-        if not value:
-            raise HTTPException(status_code=422, detail="Excluded tokens cannot be blank")
-        key = value.casefold()
-        if key in seen:
-            raise HTTPException(status_code=422, detail="Excluded tokens must be unique")
-        seen.add(key)
-        normalized.append(value)
-    if not normalized:
-        raise HTTPException(status_code=422, detail="Provide at least one excluded token")
-    return normalized
+def _profile_views(
+    profiles: list[tuple[MediaType, QualityProfile]],
+) -> list[tuple[MediaType, dict[str, object]]]:
+    """Detach template data before committing the session that created defaults."""
+    return [(media_type, profile.model_dump()) for media_type, profile in profiles]
 
 
-@router.get("/quality")
+def _submitted_payload(
+    media_type: str,
+    *,
+    allowed_resolutions: list[str],
+    allowed_audio: list[str],
+    allowed_hdr: list[str],
+    minimum_seeders: str,
+    minimum_size_bytes: str,
+    maximum_size_bytes: str,
+    excluded_tokens: str,
+    preferred_resolutions: list[str],
+    preferred_audio: list[str],
+    preferred_hdr: list[str],
+    preferred_size_band_min: list[str],
+    preferred_size_band_max: list[str],
+) -> dict[str, object]:
+    return {
+        "media_type": media_type,
+        "allowed_resolutions": allowed_resolutions,
+        "allowed_audio": allowed_audio,
+        "allowed_hdr": allowed_hdr,
+        "minimum_seeders": minimum_seeders,
+        "minimum_size_bytes": minimum_size_bytes,
+        "maximum_size_bytes": maximum_size_bytes,
+        "excluded_tokens": excluded_tokens,
+        "preferred_resolutions": preferred_resolutions,
+        "preferred_audio": preferred_audio,
+        "preferred_hdr": preferred_hdr,
+        "preferred_size_band_min": preferred_size_band_min,
+        "preferred_size_band_max": preferred_size_band_max,
+    }
+
+
+def _size_bands(minimums: list[str], maximums: list[str]) -> list[dict[str, str]]:
+    if len(minimums) != len(maximums):
+        raise QualityProfileValidationError(
+            "preferred_size_bands", "Each size band needs both a minimum and maximum"
+        )
+
+    bands: list[dict[str, str]] = []
+    for minimum, maximum in zip(minimums, maximums):
+        minimum = minimum.strip()
+        maximum = maximum.strip()
+        if not minimum and not maximum:
+            continue
+        if not minimum or not maximum:
+            raise QualityProfileValidationError(
+                "preferred_size_bands", "Each size band needs both a minimum and maximum"
+            )
+        bands.append({"min_bytes": minimum, "max_bytes": maximum})
+    return bands
+
+
+def _error_response(
+    request: Request, submitted: dict[str, object], error: QualityProfileValidationError
+) -> HTMLResponse:
+    with get_session(request.app.state.engine) as session:
+        profiles = _profile_views(_profiles(session))
+        session.commit()
+    return templates.TemplateResponse(
+        request,
+        "quality.html",
+        {
+            "profiles": profiles,
+            "submitted": submitted,
+            "error_field": error.field,
+            "error": str(error),
+        },
+        status_code=422,
+    )
+
+
+@router.get("/quality", response_class=HTMLResponse)
 async def get_quality(request: Request):
     with get_session(request.app.state.engine) as session:
-        profile = _get_or_create_profile(session)
-        return _profile_payload(profile)
+        profiles = _profile_views(_profiles(session))
+        session.commit()
+    return templates.TemplateResponse(request, "quality.html", {"profiles": profiles})
 
 
-@router.post("/quality")
+@router.post("/quality/{media_type}")
 async def update_quality(
     request: Request,
-    allowed_resolutions: list[str] = Form(...),
-    minimum_seeders: str = Form(...),
-    excluded_tokens: str = Form(...),
+    media_type: str,
+    allowed_resolutions: list[str] = Form(default=[]),
+    allowed_audio: list[str] = Form(default=[]),
+    allowed_hdr: list[str] = Form(default=[]),
+    minimum_seeders: str = Form(""),
+    minimum_size_bytes: str = Form(""),
+    maximum_size_bytes: str = Form(""),
+    excluded_tokens: str = Form(""),
+    preferred_resolutions: list[str] = Form(default=[]),
+    preferred_audio: list[str] = Form(default=[]),
+    preferred_hdr: list[str] = Form(default=[]),
+    preferred_size_band_min: list[str] = Form(default=[]),
+    preferred_size_band_max: list[str] = Form(default=[]),
 ):
-    resolutions = _normalize_resolutions(allowed_resolutions)
-    exclusions = _normalize_excluded_tokens(excluded_tokens)
+    if media_type not in {MediaType.MOVIE.value, MediaType.TV.value}:
+        raise HTTPException(status_code=404, detail="Quality profile not found")
+
+    submitted = _submitted_payload(
+        media_type,
+        allowed_resolutions=allowed_resolutions,
+        allowed_audio=allowed_audio,
+        allowed_hdr=allowed_hdr,
+        minimum_seeders=minimum_seeders,
+        minimum_size_bytes=minimum_size_bytes,
+        maximum_size_bytes=maximum_size_bytes,
+        excluded_tokens=excluded_tokens,
+        preferred_resolutions=preferred_resolutions,
+        preferred_audio=preferred_audio,
+        preferred_hdr=preferred_hdr,
+        preferred_size_band_min=preferred_size_band_min,
+        preferred_size_band_max=preferred_size_band_max,
+    )
     try:
-        seeders = int(minimum_seeders)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Minimum seeders must be an integer") from exc
-    if seeders < 0:
-        raise HTTPException(status_code=422, detail="Minimum seeders must be non-negative")
+        payload = {
+            **submitted,
+            "preferred_size_bands": _size_bands(
+                preferred_size_band_min, preferred_size_band_max
+            ),
+        }
+        values = _profile_service.normalize_profile_input(payload)
+    except QualityProfileValidationError as exc:
+        return _error_response(request, submitted, exc)
 
     with get_session(request.app.state.engine) as session:
-        profile = _get_or_create_profile(session)
-        profile.allowed_resolutions = resolutions
-        profile.excluded_tokens = exclusions
-        profile.minimum_seeders = seeders
+        profile = get_or_create_profile(session, MediaType(media_type))
+        for field, value in values.__dict__.items():
+            setattr(profile, field, value)
         profile.updated_at = _utcnow()
         session.add(profile)
         session.commit()
