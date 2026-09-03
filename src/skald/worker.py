@@ -40,6 +40,7 @@ from skald.organizer import (
 from skald.qbittorrent import QbittorrentClient
 from skald.quality import default_quality_profile
 from skald.services.downloaded_quality import record_organized_quality
+from skald.services.notifications import NotificationDeliveryService
 from skald.subscriptions import scan_due_subscriptions
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ async def poll_once(
     indexer: IndexerClient | None = None,
     subscription_check_interval_seconds: int = 6 * 60 * 60,
     settings: Settings | None = None,
+    delivery_service: NotificationDeliveryService | None = None,
 ) -> None:
     try:
         jobs = session.exec(select(MediaJob).where(MediaJob.status.in_(ACTIVE_STATUSES))).all()
@@ -123,6 +125,7 @@ async def poll_once(
                 settings=settings,
                 profile_provider=lambda: session.get(QualityProfile, 1)
                 or default_quality_profile(),
+                delivery_service=delivery_service,
                 interval_seconds=subscription_check_interval_seconds,
                 now=lambda: datetime.now(timezone.utc),
             )
@@ -958,6 +961,7 @@ async def worker_loop(
     indexer: IndexerClient | None = None,
     subscription_check_interval_seconds: int = 6 * 60 * 60,
     settings: Settings | None = None,
+    delivery_service: NotificationDeliveryService | None = None,
 ) -> None:
     while True:
         session = None
@@ -971,6 +975,7 @@ async def worker_loop(
                     indexer=indexer,
                     subscription_check_interval_seconds=subscription_check_interval_seconds,
                     settings=settings,
+                    delivery_service=delivery_service,
                 )
         except Exception:  # noqa: BLE001 - keep the worker alive across transient database failures
             logger.exception("worker poll failed")

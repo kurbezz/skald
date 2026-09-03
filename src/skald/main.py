@@ -17,6 +17,7 @@ from skald.routes.quality import router as quality_router
 from skald.routes.search import router as search_router
 from skald.routes.subscriptions import router as subscriptions_router
 from skald.tmdb import TmdbClient
+from skald.services.notifications import NotificationDeliveryService
 from skald.worker import worker_loop
 
 
@@ -31,6 +32,9 @@ def create_app() -> FastAPI:
 
         app.state.settings = settings
         app.state.engine = engine
+        app.state.notification_delivery = NotificationDeliveryService(
+            lambda: get_session(engine), settings
+        )
         app.state.indexer = TorznabIndexer(settings.jackett_url, settings.jackett_api_key)
         app.state.qbit = QbittorrentClient(
             settings.qbit_host, settings.qbit_user, settings.qbit_pass
@@ -48,6 +52,7 @@ def create_app() -> FastAPI:
                 indexer=app.state.indexer,
                 subscription_check_interval_seconds=settings.subscription_check_interval_seconds,
                 settings=settings,
+                delivery_service=app.state.notification_delivery,
             )
         )
         try:

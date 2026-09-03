@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import StaticPool
@@ -25,6 +26,7 @@ from skald.models import (
 from skald.qbittorrent import TorrentFile, TorrentStatus
 from skald.indexer.base import ReleaseResult
 from skald.subscriptions import scan_due_subscriptions
+from skald.services.notifications import NotificationDeliveryService
 from skald.worker import (
     DeletionOutcome,
     organize_job,
@@ -111,8 +113,10 @@ async def test_poll_once_scans_subscriptions_without_changing_job_polling(tmp_pa
     engine = make_engine()
     calls = []
 
-    async def record_scan(session, indexer, *, qbit, settings, profile_provider, interval_seconds, now):
-        calls.append((session, indexer, qbit, settings, profile_provider, interval_seconds, now))
+    async def record_scan(
+        session, indexer, *, qbit, settings, profile_provider, delivery_service, interval_seconds, now
+    ):
+        calls.append((session, indexer, qbit, settings, profile_provider, delivery_service, interval_seconds, now))
 
     monkeypatch.setattr("skald.worker.scan_due_subscriptions", record_scan)
     indexer = FakeIndexer()
@@ -132,10 +136,34 @@ async def test_poll_once_scans_subscriptions_without_changing_job_polling(tmp_pa
     assert isinstance(calls[0][2], FakeQbit)
     assert calls[0][3].category_movie == "movies"
     assert calls[0][4]() is not None
-    assert calls[0][5] == 21_600
-    assert callable(calls[0][6])
-    assert isinstance(calls[0][6](), datetime)
-    assert calls[0][6]().tzinfo is UTC
+    assert calls[0][5] is None
+    assert calls[0][6] == 21_600
+    assert callable(calls[0][7])
+    assert isinstance(calls[0][7](), datetime)
+    assert calls[0][7]().tzinfo is UTC
+
+
+def test_app_startup_wires_concrete_delivery_service_to_worker(tmp_path, monkeypatch):
+    import skald.main as main_module
+
+    captured = {}
+
+    async def record_worker_loop(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(db_path=str(tmp_path / "startup-notifications.db")),
+    )
+    monkeypatch.setattr(main_module, "worker_loop", record_worker_loop)
+    app = main_module.create_app()
+
+    with TestClient(app):
+        pass
+
+    assert isinstance(app.state.notification_delivery, NotificationDeliveryService)
+    assert captured["delivery_service"] is app.state.notification_delivery
 
 
 async def test_poll_once_auto_grabs_scoped_tv_files_selectively(tmp_path):

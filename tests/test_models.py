@@ -861,3 +861,60 @@ def test_migrated_event_indexes_reject_semantic_duplicates_with_divergent_dedupe
         connection.exec_driver_sql(event_sql, ("movie:tmdb:1", "UPGRADE_PROPOSAL", "upgrade:first"))
         with pytest.raises(IntegrityError):
             connection.exec_driver_sql(event_sql, ("movie:tmdb:1", "UPGRADE_PROPOSAL", "upgrade:second"))
+
+
+def test_migration_preserves_attempt_audit_when_its_event_is_deleted(tmp_path):
+    engine = get_engine(str(tmp_path / "legacy-notification-attempt.db"))
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE mediasubscription (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql("CREATE TABLE mediajob (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql(
+            "CREATE TABLE subscriptionrelease (id INTEGER PRIMARY KEY, size_bytes INTEGER)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE subscriptionevent ("
+            "id INTEGER PRIMARY KEY, subscription_id INTEGER NOT NULL, subscription_release_id INTEGER, "
+            "media_type VARCHAR NOT NULL, target_key VARCHAR, kind VARCHAR NOT NULL, dedupe_key VARCHAR NOT NULL, "
+            "title VARCHAR NOT NULL, body VARCHAR NOT NULL, prior_quality_score JSON, "
+            "current_quality_score JSON, created_at DATETIME NOT NULL, read_at DATETIME)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE notificationdeliveryattempt ("
+            "id INTEGER PRIMARY KEY, event_id INTEGER NOT NULL REFERENCES subscriptionevent(id), "
+            "channel VARCHAR NOT NULL, outcome VARCHAR NOT NULL, attempted_at DATETIME NOT NULL, "
+            "provider_message_id VARCHAR, error_summary VARCHAR, "
+            "CONSTRAINT uq_delivery_event_channel UNIQUE (event_id, channel))"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO subscriptionevent "
+            "(id, subscription_id, media_type, kind, dedupe_key, title, body, created_at) "
+            "VALUES (1, 1, 'MOVIE', 'RELEASE_MATCH', 'release:1', 'Event', 'Body', CURRENT_TIMESTAMP)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO notificationdeliveryattempt "
+            "(id, event_id, channel, outcome, attempted_at) "
+            "VALUES (9, 1, 'EMAIL', 'SKIPPED', CURRENT_TIMESTAMP)"
+        )
+
+    migrate_schema(engine)
+
+    with engine.begin() as connection:
+        event_column = next(
+            column
+            for column in connection.exec_driver_sql(
+                "PRAGMA table_info(notificationdeliveryattempt)"
+            ).fetchall()
+            if column[1] == "event_id"
+        )
+        foreign_keys = connection.exec_driver_sql(
+            "PRAGMA foreign_key_list(notificationdeliveryattempt)"
+        ).fetchall()
+        assert event_column[3] == 0
+        assert any(
+            key[2:5] == ("subscriptionevent", "event_id", "id") and key[6] == "SET NULL"
+            for key in foreign_keys
+        )
+        connection.exec_driver_sql("DELETE FROM subscriptionevent WHERE id = 1")
+        assert connection.exec_driver_sql(
+            "SELECT event_id FROM notificationdeliveryattempt WHERE id = 9"
+        ).scalar() is None

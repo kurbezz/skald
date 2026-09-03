@@ -348,6 +348,41 @@ async def test_due_scan_records_first_result_then_deduplicates(session):
     assert session.exec(select(MediaJob)).all() == []
 
 
+async def test_delivery_failure_does_not_stop_the_next_subscription_scan(session):
+    now = datetime(2026, 9, 3, tzinfo=UTC)
+    session.add_all([
+        MediaSubscription(tmdb_id=1, type=MediaType.MOVIE, title="First", next_check_at=now),
+        MediaSubscription(tmdb_id=2, type=MediaType.MOVIE, title="Second", next_check_at=now),
+    ])
+    session.commit()
+
+    class FailingFirstDelivery:
+        def __init__(self):
+            self.event_ids = []
+
+        def deliver_event(self, event_id):
+            self.event_ids.append(event_id)
+            if len(self.event_ids) == 1:
+                raise RuntimeError("provider unavailable")
+
+    delivery = FailingFirstDelivery()
+    indexer = ScanIndexer([
+        ReleaseResult("Film.2026.1080p", "fake", 1, 5, 0, "magnet:?film")
+    ])
+
+    await scan_due_subscriptions(
+        session,
+        indexer,
+        delivery_service=delivery,
+        interval_seconds=60,
+        now=now,
+    )
+
+    assert len(delivery.event_ids) == 2
+    assert len(session.exec(select(SubscriptionRelease)).all()) == 2
+    assert len(session.exec(select(SubscriptionEvent)).all()) == 2
+
+
 async def test_due_scan_skips_inactive_future_and_wrong_media_type(session):
     now = datetime(2026, 9, 3, tzinfo=UTC)
     due = MediaSubscription(
@@ -901,7 +936,10 @@ def test_delete_subscription_keeps_sourced_job_and_baseline_after_clearing_refer
         assert baseline is not None
         assert (baseline.subscription_id, baseline.media_job_id) == (None, job_id)
         assert database_session.exec(select(SubscriptionEvent)).all() == []
-        assert database_session.exec(select(NotificationDeliveryAttempt)).all() == []
+        attempts = database_session.exec(select(NotificationDeliveryAttempt)).all()
+        assert [(attempt.event_id, attempt.channel) for attempt in attempts] == [
+            (None, NotificationChannel.EMAIL)
+        ]
 
 
 def test_tv_subscription_detail_and_season_routes(client, app, captured_templates):

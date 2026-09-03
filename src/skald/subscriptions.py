@@ -5,7 +5,6 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 import logging
-from typing import Protocol
 
 from sqlmodel import Session, select
 
@@ -25,17 +24,12 @@ from skald.quality import QualityCandidate, QualityProfileService
 from skald.routes.quality import get_or_create_profile
 from skald.services.events import create_release_match, create_upgrade_proposals
 from skald.services.grab import MediaJobCreationError, TorrentAdder, create_media_job
+from skald.services.notifications import NotificationDeliveryService
 
 Clock = datetime | Callable[[], datetime]
 ProfileProvider = Callable[[], QualityProfile | None]
 _AUTO_GRAB_FAILURE_PREFIX = "Automatic grab failed: "
 logger = logging.getLogger(__name__)
-
-
-class EventDelivery(Protocol):
-    """Delivers one committed event."""
-
-    def deliver_event(self, event_id: int) -> None: ...
 
 
 def release_fingerprint(subscription_id: int, release: ReleaseResult) -> str:
@@ -172,7 +166,7 @@ async def scan_due_subscriptions(
     qbit: TorrentAdder | None = None,
     settings: Settings | None = None,
     profile_provider: ProfileProvider | None = None,
-    delivery_service: EventDelivery | None = None,
+    delivery_service: NotificationDeliveryService | None = None,
     interval_seconds: int,
     now: Clock,
 ) -> None:

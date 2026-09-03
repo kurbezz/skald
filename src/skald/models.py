@@ -267,7 +267,9 @@ class NotificationDeliveryAttempt(SQLModel, table=True):
     __table_args__ = (UniqueConstraint("event_id", "channel", name="uq_delivery_event_channel"),)
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    event_id: int = Field(foreign_key="subscriptionevent.id", index=True)
+    event_id: Optional[int] = Field(
+        default=None, foreign_key="subscriptionevent.id", ondelete="SET NULL", index=True
+    )
     channel: NotificationChannel
     outcome: DeliveryOutcome = Field(default=DeliveryOutcome.SKIPPED)
     attempted_at: datetime = Field(default_factory=_utcnow)

@@ -164,6 +164,79 @@ def _rebuild_downloadedquality(connection) -> None:
         raise
 
 
+_NOTIFICATION_ATTEMPT_COLUMNS = {
+    "id", "event_id", "channel", "outcome", "attempted_at", "provider_message_id", "error_summary",
+}
+_NOTIFICATION_ATTEMPT_COLUMN_ORDER = (
+    "id", "event_id", "channel", "outcome", "attempted_at", "provider_message_id", "error_summary",
+)
+
+
+def _notification_attempt_requires_rebuild(connection) -> bool:
+    columns = {
+        column[1]: column
+        for column in connection.exec_driver_sql(
+            "PRAGMA table_info(notificationdeliveryattempt)"
+        ).fetchall()
+    }
+    if not _NOTIFICATION_ATTEMPT_COLUMNS.issubset(columns) or columns["event_id"][3] != 0:
+        return True
+    foreign_keys = connection.exec_driver_sql(
+        "PRAGMA foreign_key_list(notificationdeliveryattempt)"
+    ).fetchall()
+    if not any(
+        key[2:5] == ("subscriptionevent", "event_id", "id") and key[6] == "SET NULL"
+        for key in foreign_keys
+    ):
+        return True
+    for index in connection.exec_driver_sql(
+        "PRAGMA index_list(notificationdeliveryattempt)"
+    ).fetchall():
+        index_columns = [
+            column[2]
+            for column in connection.exec_driver_sql(f"PRAGMA index_info({index[1]})").fetchall()
+        ]
+        if index[2] and index_columns == ["event_id", "channel"]:
+            return False
+    return True
+
+
+def _create_notification_attempt_table(connection, table: str = "notificationdeliveryattempt") -> None:
+    connection.exec_driver_sql(
+        f"CREATE TABLE {table} ("
+        "id INTEGER NOT NULL PRIMARY KEY, "
+        "event_id INTEGER REFERENCES subscriptionevent(id) ON DELETE SET NULL, "
+        "channel VARCHAR NOT NULL, outcome VARCHAR NOT NULL, attempted_at DATETIME NOT NULL, "
+        "provider_message_id VARCHAR, error_summary VARCHAR, "
+        "CONSTRAINT uq_delivery_event_channel UNIQUE (event_id, channel))"
+    )
+
+
+def _rebuild_notification_attempt(connection) -> None:
+    columns = ", ".join(_NOTIFICATION_ATTEMPT_COLUMN_ORDER)
+    try:
+        connection.exec_driver_sql("DROP TABLE IF EXISTS notificationdeliveryattempt_new")
+        _create_notification_attempt_table(connection, "notificationdeliveryattempt_new")
+        connection.exec_driver_sql(
+            "INSERT INTO notificationdeliveryattempt_new ("
+            + columns
+            + ") SELECT id, CASE WHEN event_id IS NULL OR EXISTS "
+            "(SELECT 1 FROM subscriptionevent WHERE subscriptionevent.id = event_id) "
+            "THEN event_id ELSE NULL END, channel, outcome, attempted_at, provider_message_id, "
+            "error_summary FROM notificationdeliveryattempt"
+        )
+        connection.exec_driver_sql("DROP TABLE notificationdeliveryattempt")
+        connection.exec_driver_sql(
+            "ALTER TABLE notificationdeliveryattempt_new RENAME TO notificationdeliveryattempt"
+        )
+    except Exception:
+        try:
+            connection.exec_driver_sql("DROP TABLE IF EXISTS notificationdeliveryattempt_new")
+        except Exception:
+            pass
+        raise
+
+
 _DEFAULT_RESOLUTIONS = ["1080p", "2160p"]
 _DEFAULT_EXCLUDED_TOKENS = ["CAM", "TS", "TeleSync"]
 _RESOLUTION_ALIASES = {
@@ -384,6 +457,9 @@ def migrate_schema(engine) -> None:
                 _recover_shadow_table(connection, "qualityprofile_new", "qualityprofile")
                 _recover_shadow_table(connection, "organizedfile_new", "organizedfile")
                 _recover_shadow_table(connection, "downloadedquality_new", "downloadedquality")
+                _recover_shadow_table(
+                    connection, "notificationdeliveryattempt_new", "notificationdeliveryattempt"
+                )
         except Exception:
             pass
         raise
@@ -504,13 +580,11 @@ def _migrate_schema(engine) -> None:
             "WHERE kind = 'UPGRADE_PROPOSAL' AND target_key IS NOT NULL "
             "AND subscription_release_id IS NOT NULL"
         )
-        connection.exec_driver_sql(
-            "CREATE TABLE IF NOT EXISTS notificationdeliveryattempt ("
-            "id INTEGER NOT NULL PRIMARY KEY, event_id INTEGER NOT NULL REFERENCES subscriptionevent(id), "
-            "channel VARCHAR NOT NULL, outcome VARCHAR NOT NULL, attempted_at DATETIME NOT NULL, "
-            "provider_message_id VARCHAR, error_summary VARCHAR, "
-            "CONSTRAINT uq_delivery_event_channel UNIQUE (event_id, channel))"
-        )
+        notification_attempt_exists = _table_exists(connection, "notificationdeliveryattempt")
+        if not notification_attempt_exists:
+            _create_notification_attempt_table(connection)
+        elif _notification_attempt_requires_rebuild(connection):
+            _rebuild_notification_attempt(connection)
         connection.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_notificationdeliveryattempt_event_id "
             "ON notificationdeliveryattempt (event_id)"

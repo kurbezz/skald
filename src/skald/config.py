@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     tmdb_read_access_token: str = ""
     subscription_check_interval_seconds: int = 6 * 60 * 60
 
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_to: str = ""
+
 
 def get_settings() -> Settings:
     return Settings()
