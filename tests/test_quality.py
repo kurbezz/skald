@@ -53,12 +53,15 @@ def test_profile_and_subscription_defaults_support_auto_grab():
     profile = default_quality_profile()
     subscription = MediaSubscription(tmdb_id=1, type=MediaType.MOVIE, title="Movie")
 
-    assert profile.id == 1
     assert profile.allowed_resolutions == ["1080p", "2160p"]
     assert profile.excluded_tokens == ["CAM", "TS", "TeleSync"]
     assert profile.minimum_seeders == 5
     assert subscription.auto_download is False
     assert subscription.auto_grabbed_release_id is None
+
+
+def test_quality_profile_requires_an_explicit_media_type():
+    assert QualityProfile.model_fields["media_type"].is_required()
 
 
 def test_migration_adds_subscription_auto_grab_columns_and_quality_profile_table(tmp_path):
@@ -82,6 +85,9 @@ def test_migration_adds_subscription_auto_grab_columns_and_quality_profile_table
     assert subscription_columns["auto_download"][3] == 1
     assert subscription_columns["auto_download"][4] in ("0", "FALSE")
     assert subscription_columns["auto_grabbed_release_id"][3] == 0
-    assert profile_columns == {
-        "id", "allowed_resolutions", "excluded_tokens", "minimum_seeders", "updated_at"
-    }
+    assert {
+        "id", "media_type", "allowed_resolutions", "allowed_audio", "allowed_hdr",
+        "minimum_size_bytes", "maximum_size_bytes", "minimum_seeders", "excluded_tokens",
+        "preferred_resolutions", "preferred_audio", "preferred_hdr", "preferred_size_bands",
+        "updated_at",
+    } <= profile_columns

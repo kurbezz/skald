@@ -1,13 +1,29 @@
 import csv
 import json
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel, Session, select
 
+import skald.db as db
 from skald.db import get_engine, get_session, migrate_schema
 from skald.lifecycle import try_job_lock
-from skald.models import FileLifecycle, JobStatus, MediaJob, MediaType, OrganizationMode, OrganizedFile
+from skald.models import (
+    DownloadedQuality,
+    FileLifecycle,
+    JobStatus,
+    MediaJob,
+    MediaSubscription,
+    MediaType,
+    NotificationChannel,
+    NotificationDeliveryAttempt,
+    OrganizationMode,
+    OrganizedFile,
+    QualityProfile,
+    SubscriptionEvent,
+    SubscriptionEventKind,
+)
 
 
 def test_create_and_query_job(tmp_path):
@@ -450,3 +466,353 @@ def test_fk_invalid_rebuild_cleans_shadow_table_for_offline_repair_and_retry(tmp
         assert connection.exec_driver_sql(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'organizedfile_new'"
         ).scalar() is None
+
+
+def test_migration_converts_legacy_singleton_to_exactly_movie_and_tv_profiles(tmp_path):
+    engine = get_engine(str(tmp_path / "legacy-quality.db"))
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE qualityprofile (id INTEGER PRIMARY KEY CHECK (id = 1), "
+            "allowed_resolutions JSON NOT NULL, excluded_tokens JSON NOT NULL, "
+            "minimum_seeders INTEGER NOT NULL, updated_at DATETIME NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO qualityprofile VALUES "
+            "(1, '[\"720p\"]', '[\"CAM\"]', 9, '2026-09-03T00:00:00+00:00')"
+        )
+
+    migrate_schema(engine)
+    migrate_schema(engine)
+
+    with Session(engine) as session:
+        profiles = session.exec(select(QualityProfile).order_by(QualityProfile.media_type)).all()
+
+    assert [(profile.media_type, profile.allowed_resolutions, profile.minimum_seeders)
+            for profile in profiles] == [
+        (MediaType.MOVIE, ["720p"], 9),
+        (MediaType.TV, ["720p"], 9),
+    ]
+    assert all(profile.excluded_tokens == ["CAM"] for profile in profiles)
+    assert all(profile.allowed_audio == [] and profile.allowed_hdr == [] for profile in profiles)
+    assert all(profile.minimum_size_bytes is None and profile.maximum_size_bytes is None for profile in profiles)
+
+
+def test_migration_repairs_partial_qualityprofile_and_preserves_compatible_values(tmp_path):
+    engine = get_engine(str(tmp_path / "partial-quality.db"))
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE qualityprofile (id INTEGER PRIMARY KEY, media_type VARCHAR, "
+            "allowed_resolutions JSON, minimum_seeders INTEGER, updated_at DATETIME)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO qualityprofile VALUES "
+            "(4, 'MOVIE', '[\"720p\"]', 8, '2026-09-03T04:05:06+00:00')"
+        )
+
+    migrate_schema(engine)
+    migrate_schema(engine)
+
+    with engine.connect() as connection:
+        columns = {
+            column[1] for column in connection.exec_driver_sql("PRAGMA table_info(qualityprofile)").fetchall()
+        }
+        ddl = connection.exec_driver_sql(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'qualityprofile'"
+        ).scalar()
+        rows = connection.exec_driver_sql(
+            "SELECT media_type, allowed_resolutions, minimum_seeders, allowed_audio, allowed_hdr, "
+            "preferred_resolutions, preferred_audio, preferred_hdr, preferred_size_bands, updated_at "
+            "FROM qualityprofile ORDER BY media_type"
+        ).fetchall()
+
+    assert {"allowed_audio", "allowed_hdr", "preferred_size_bands", "maximum_size_bytes"} <= columns
+    assert "CONSTRAINT uq_qualityprofile_media_type" in ddl
+    assert "CONSTRAINT ck_qualityprofile_media_type" in ddl
+    assert rows == [
+        ("MOVIE", '["720p"]', 8, "[]", "[]", "[]", "[]", "[]", "[]", "2026-09-03T04:05:06+00:00"),
+        ("TV", '["1080p", "2160p"]', 5, "[]", "[]", "[]", "[]", "[]", "[]", rows[1][9]),
+    ]
+
+
+def test_migrate_schema_emits_event_uniqueness_indexes_and_defaults(tmp_path):
+    engine = get_engine(str(tmp_path / "migration-ddl.db"))
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE mediasubscription (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql("INSERT INTO mediasubscription VALUES (1)")
+        connection.exec_driver_sql("CREATE TABLE mediajob (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql("INSERT INTO mediajob VALUES (2)")
+        connection.exec_driver_sql("CREATE TABLE subscriptionrelease (id INTEGER PRIMARY KEY, size_bytes INTEGER NOT NULL)")
+        connection.exec_driver_sql("INSERT INTO subscriptionrelease VALUES (7, 1234)")
+        connection.exec_driver_sql(
+            "CREATE TABLE qualityprofile (id INTEGER PRIMARY KEY CHECK (id = 1), "
+            "allowed_resolutions JSON NOT NULL, excluded_tokens JSON NOT NULL, "
+            "minimum_seeders INTEGER NOT NULL, updated_at DATETIME NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO qualityprofile VALUES "
+            "(1, '[\"720p\"]', '[\"CAM\"]', 9, '2026-09-03T00:00:00+00:00')"
+        )
+
+    migrate_schema(engine)
+    migrate_schema(engine)
+
+    with engine.connect() as connection:
+        profile_rows = connection.exec_driver_sql(
+            "SELECT media_type, allowed_audio, allowed_hdr, minimum_size_bytes, maximum_size_bytes, "
+            "preferred_resolutions, preferred_audio, preferred_hdr, preferred_size_bands, updated_at "
+            "FROM qualityprofile ORDER BY media_type"
+        ).fetchall()
+        job = connection.exec_driver_sql(
+            "SELECT source_subscription_id, source_subscription_release_id FROM mediajob WHERE id = 2"
+        ).one()
+        release = connection.exec_driver_sql(
+            "SELECT resolution, audio, hdr, size_bytes FROM subscriptionrelease WHERE id = 7"
+        ).one()
+        indexes = {
+            name: sql for name, sql in connection.exec_driver_sql(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'subscriptionevent'"
+            ).fetchall()
+        }
+
+    assert profile_rows == [
+        ("MOVIE", "[]", "[]", None, None, "[]", "[]", "[]", "[]", "2026-09-03T00:00:00+00:00"),
+        ("TV", "[]", "[]", None, None, "[]", "[]", "[]", "[]", "2026-09-03T00:00:00+00:00"),
+    ]
+    assert job == (None, None)
+    assert release == (None, None, None, 1234)
+    assert "WHERE kind = 'RELEASE_MATCH'" in indexes["uq_subscriptionevent_release_match"]
+    assert "WHERE kind = 'UPGRADE_PROPOSAL'" in indexes["uq_subscriptionevent_upgrade_proposal"]
+
+
+def test_migration_cleans_both_shadow_tables_after_failure_and_retry_preserves_data(tmp_path, monkeypatch):
+    engine = get_engine(str(tmp_path / "migration-recovery.db"))
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE qualityprofile (id INTEGER PRIMARY KEY CHECK (id = 1), "
+            "allowed_resolutions JSON NOT NULL, excluded_tokens JSON NOT NULL, "
+            "minimum_seeders INTEGER NOT NULL, updated_at DATETIME NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO qualityprofile VALUES (1, '[\"720p\"]', '[\"CAM\"]', 9, '2026-09-03T00:00:00')"
+        )
+        connection.exec_driver_sql("CREATE TABLE mediajob (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql(
+            "CREATE TABLE organizedfile (id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL, path VARCHAR NOT NULL)"
+        )
+        connection.exec_driver_sql("INSERT INTO organizedfile VALUES (1, 999, '/library/orphan.mkv')")
+
+    original = db._migrate_qualityprofile
+
+    def create_interrupted_quality_shadow(connection):
+        original(connection)
+        connection.exec_driver_sql("CREATE TABLE qualityprofile_new AS SELECT * FROM qualityprofile")
+        connection.exec_driver_sql("DROP TABLE qualityprofile")
+
+    monkeypatch.setattr(db, "_migrate_qualityprofile", create_interrupted_quality_shadow)
+    with pytest.raises(IntegrityError):
+        migrate_schema(engine)
+    monkeypatch.setattr(db, "_migrate_qualityprofile", original)
+
+    with engine.begin() as connection:
+        assert connection.exec_driver_sql(
+            "SELECT 1 FROM sqlite_master WHERE name = 'qualityprofile_new'"
+        ).scalar() is None
+        assert connection.exec_driver_sql(
+            "SELECT 1 FROM sqlite_master WHERE name = 'organizedfile_new'"
+        ).scalar() is None
+        assert connection.exec_driver_sql(
+            "SELECT minimum_seeders FROM qualityprofile WHERE id = 1"
+        ).scalar() == 9
+        connection.exec_driver_sql("DELETE FROM organizedfile WHERE id = 1")
+
+    migrate_schema(engine)
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql("SELECT COUNT(*) FROM qualityprofile").scalar() == 2
+        assert connection.exec_driver_sql(
+            "SELECT allowed_resolutions, minimum_seeders FROM qualityprofile WHERE media_type = 'MOVIE'"
+        ).one() == ('["720p"]', 9)
+
+
+def test_migration_recovers_quality_shadow_when_a_failed_later_step_lost_the_main_table(tmp_path, monkeypatch):
+    engine = get_engine(str(tmp_path / "missing-quality-main.db"))
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE qualityprofile (id INTEGER PRIMARY KEY CHECK (id = 1), "
+            "allowed_resolutions JSON NOT NULL, excluded_tokens JSON NOT NULL, "
+            "minimum_seeders INTEGER NOT NULL, updated_at DATETIME NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO qualityprofile VALUES (1, '[\"720p\"]', '[\"CAM\"]', 9, '2026-09-03T00:00:00')"
+        )
+
+    def lose_main_after_quality_copy(failing_engine):
+        with failing_engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE qualityprofile_new AS SELECT * FROM qualityprofile")
+            connection.exec_driver_sql("DROP TABLE qualityprofile")
+        raise RuntimeError("later migration failed")
+
+    monkeypatch.setattr(db, "_migrate_schema", lose_main_after_quality_copy)
+    with pytest.raises(RuntimeError, match="later migration failed"):
+        migrate_schema(engine)
+
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            "SELECT 1 FROM sqlite_master WHERE name = 'qualityprofile_new'"
+        ).scalar() is None
+        assert connection.exec_driver_sql(
+            "SELECT minimum_seeders FROM qualityprofile WHERE id = 1"
+        ).scalar() == 9
+
+
+def test_subscription_release_retains_existing_size_bytes_and_adds_only_observed_attributes(tmp_path):
+    engine = get_engine(str(tmp_path / "existing-release.db"))
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE mediajob (id INTEGER PRIMARY KEY, title VARCHAR NOT NULL)")
+        connection.exec_driver_sql("INSERT INTO mediajob VALUES (3, 'Existing film job')")
+        connection.exec_driver_sql(
+            "CREATE TABLE subscriptionrelease (id INTEGER PRIMARY KEY, size_bytes INTEGER NOT NULL)"
+        )
+        connection.exec_driver_sql("INSERT INTO subscriptionrelease VALUES (7, 1234)")
+
+    migrate_schema(engine)
+
+    with engine.connect() as connection:
+        release_columns = [
+            column[1]
+            for column in connection.exec_driver_sql("PRAGMA table_info(subscriptionrelease)").fetchall()
+        ]
+        assert connection.exec_driver_sql(
+            "SELECT size_bytes FROM subscriptionrelease WHERE id = 7"
+        ).scalar() == 1234
+        assert connection.exec_driver_sql("SELECT title FROM mediajob WHERE id = 3").scalar() == "Existing film job"
+
+    assert release_columns.count("size_bytes") == 1
+    assert {"resolution", "audio", "hdr"} <= set(release_columns)
+
+
+def test_quality_and_event_schema_constraints_reject_duplicate_contracts(tmp_path):
+    engine = get_engine(str(tmp_path / "quality-contracts.db"))
+    SQLModel.metadata.create_all(engine)
+    now = datetime.now(timezone.utc)
+
+    with Session(engine) as session:
+        subscription = MediaSubscription(tmdb_id=1, type=MediaType.MOVIE, title="Film")
+        job = MediaJob(
+            type=MediaType.MOVIE, title="Film", release_title="Film.2160p", qbit_hash="hash",
+            category="skald-movie",
+        )
+        other_job = MediaJob(
+            type=MediaType.MOVIE, title="Other", release_title="Other.1080p", qbit_hash="other-hash",
+            category="skald-movie",
+        )
+        third_job = MediaJob(
+            type=MediaType.MOVIE, title="Third", release_title="Third.720p", qbit_hash="third-hash",
+            category="skald-movie",
+        )
+        session.add_all([subscription, job, other_job, third_job])
+        session.commit()
+        session.add(QualityProfile(media_type=MediaType.MOVIE))
+        session.commit()
+        session.add(QualityProfile(media_type=MediaType.MOVIE))
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+
+        session.add_all([
+            DownloadedQuality(
+                media_type=MediaType.MOVIE, target_key="movie:tmdb:1", media_job_id=job.id,
+                resolution="2160p", audio="atmos", hdr="dolby_vision", size_bytes=None,
+                score_version="v1", quality_score=[4, 4, 5],
+            ),
+            SubscriptionEvent(
+                subscription_id=subscription.id, media_type=MediaType.MOVIE,
+                kind=SubscriptionEventKind.RELEASE_MATCH, dedupe_key="release:1",
+                title="New release", body="Film.2160p",
+            ),
+        ])
+        session.commit()
+        session.add(DownloadedQuality(
+            media_type=MediaType.MOVIE, target_key="movie:tmdb:2", media_job_id=job.id,
+            resolution="1080p", audio="5.1", hdr="hdr", size_bytes=None,
+            score_version="v1", quality_score=[3, 2, 2],
+        ))
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+
+        session.add(DownloadedQuality(
+            media_type=MediaType.MOVIE, target_key="movie:tmdb:1", media_job_id=other_job.id,
+            resolution="1080p", audio="5.1", hdr="hdr", size_bytes=None,
+            score_version="v1", quality_score=[3, 2, 2],
+        ))
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+
+        event = session.exec(select(SubscriptionEvent)).one()
+        session.add(SubscriptionEvent(
+            subscription_id=subscription.id, media_type=MediaType.MOVIE,
+            kind=SubscriptionEventKind.RELEASE_MATCH, dedupe_key="release:1",
+            title="Duplicate release", body="Film.2160p",
+        ))
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+
+        upgrade = SubscriptionEvent(
+            subscription_id=subscription.id, media_type=MediaType.MOVIE,
+            kind=SubscriptionEventKind.UPGRADE_PROPOSAL, dedupe_key="upgrade:movie:tmdb:1:1",
+            title="Upgrade", body="Film.2160p",
+        )
+        session.add(upgrade)
+        session.commit()
+        session.add(SubscriptionEvent(
+            subscription_id=subscription.id, media_type=MediaType.MOVIE,
+            kind=SubscriptionEventKind.UPGRADE_PROPOSAL, dedupe_key="upgrade:movie:tmdb:1:1",
+            title="Duplicate upgrade", body="Film.2160p",
+        ))
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+
+        session.add(NotificationDeliveryAttempt(event_id=event.id, channel=NotificationChannel.EMAIL))
+        session.commit()
+        session.add(NotificationDeliveryAttempt(event_id=event.id, channel=NotificationChannel.EMAIL))
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+
+    with engine.begin() as connection:
+        with pytest.raises(IntegrityError):
+            connection.exec_driver_sql(
+                "INSERT INTO qualityprofile "
+                "(media_type, allowed_resolutions, allowed_audio, allowed_hdr, minimum_seeders, "
+                "excluded_tokens, preferred_resolutions, preferred_audio, preferred_hdr, "
+                "preferred_size_bands, updated_at) "
+                "VALUES ('BOOK', '[]', '[]', '[]', 0, '[]', '[]', '[]', '[]', '[]', ?) ",
+                (now,),
+            )
+
+
+def test_migrated_event_indexes_reject_semantic_duplicates_with_divergent_dedupe_keys(tmp_path):
+    engine = get_engine(str(tmp_path / "event-indexes.db"))
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE mediasubscription (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql("INSERT INTO mediasubscription VALUES (1)")
+        connection.exec_driver_sql("CREATE TABLE mediajob (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql("CREATE TABLE subscriptionrelease (id INTEGER PRIMARY KEY, size_bytes INTEGER)")
+        connection.exec_driver_sql("INSERT INTO subscriptionrelease VALUES (7, 1)")
+
+    migrate_schema(engine)
+    event_sql = (
+        "INSERT INTO subscriptionevent "
+        "(subscription_id, subscription_release_id, media_type, target_key, kind, dedupe_key, title, body, created_at) "
+        "VALUES (1, 7, 'MOVIE', ?, ?, ?, 'Event', 'Body', CURRENT_TIMESTAMP)"
+    )
+    with engine.begin() as connection:
+        connection.exec_driver_sql(event_sql, (None, "RELEASE_MATCH", "release:first"))
+        with pytest.raises(IntegrityError):
+            connection.exec_driver_sql(event_sql, (None, "RELEASE_MATCH", "release:second"))
+        connection.exec_driver_sql(event_sql, ("movie:tmdb:1", "UPGRADE_PROPOSAL", "upgrade:first"))
+        with pytest.raises(IntegrityError):
+            connection.exec_driver_sql(event_sql, ("movie:tmdb:1", "UPGRADE_PROPOSAL", "upgrade:second"))

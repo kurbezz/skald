@@ -2,13 +2,29 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, Column, JSON, UniqueConstraint
+from sqlalchemy import CheckConstraint, Column, Index, JSON, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
 class MediaType(str, Enum):
     MOVIE = "movie"
     TV = "tv"
+
+
+class SubscriptionEventKind(str, Enum):
+    RELEASE_MATCH = "release_match"
+    UPGRADE_PROPOSAL = "upgrade_proposal"
+
+
+class NotificationChannel(str, Enum):
+    TELEGRAM = "telegram"
+    EMAIL = "email"
+
+
+class DeliveryOutcome(str, Enum):
+    SENT = "sent"
+    FAILED = "failed"
+    SKIPPED = "skipped"
 
 
 class JobStatus(str, Enum):
@@ -59,6 +75,12 @@ class MediaJob(SQLModel, table=True):
         sa_column_kwargs={"server_default": "SCALAR"},
     )
     operation_token: Optional[str] = None
+    source_subscription_id: Optional[int] = Field(
+        default=None, foreign_key="mediasubscription.id", index=True
+    )
+    source_subscription_release_id: Optional[int] = Field(
+        default=None, foreign_key="subscriptionrelease.id", index=True
+    )
     progress: float = Field(default=0.0)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
@@ -130,20 +152,34 @@ class TvSubscriptionScope(SQLModel, table=True):
 
 
 class QualityProfile(SQLModel, table=True):
-    """The one global release-quality policy, always stored under ID 1."""
+    """An independently editable quality policy for one media type."""
 
-    __table_args__ = (CheckConstraint("id = 1", name="ck_qualityprofile_singleton"),)
+    __table_args__ = (
+        UniqueConstraint("media_type", name="uq_qualityprofile_media_type"),
+        CheckConstraint("media_type IN ('MOVIE', 'TV')", name="ck_qualityprofile_media_type"),
+    )
 
-    id: int = Field(default=1, primary_key=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    media_type: MediaType = Field(index=True)
     allowed_resolutions: list[str] = Field(
         default_factory=lambda: ["1080p", "2160p"],
         sa_column=Column(JSON, nullable=False),
     )
+    allowed_audio: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    allowed_hdr: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    minimum_size_bytes: Optional[int] = None
+    maximum_size_bytes: Optional[int] = None
     excluded_tokens: list[str] = Field(
         default_factory=lambda: ["CAM", "TS", "TeleSync"],
         sa_column=Column(JSON, nullable=False),
     )
     minimum_seeders: int = Field(default=5)
+    preferred_resolutions: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    preferred_audio: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    preferred_hdr: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    preferred_size_bands: list[dict[str, int]] = Field(
+        default_factory=list, sa_column=Column(JSON, nullable=False)
+    )
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -160,6 +196,82 @@ class SubscriptionRelease(SQLModel, table=True):
     discovered_at: datetime = Field(default_factory=_utcnow, index=True)
     fingerprint: str = Field(index=True, sa_column_kwargs={"unique": True})
     read_at: Optional[datetime] = None
+    resolution: Optional[str] = None
+    audio: Optional[str] = None
+    hdr: Optional[str] = None
+
+
+class DownloadedQuality(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint("media_type", "target_key", name="uq_downloaded_quality_target"),
+        UniqueConstraint("media_job_id", name="uq_downloaded_quality_job"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    media_type: MediaType
+    target_key: str
+    subscription_id: Optional[int] = Field(default=None, foreign_key="mediasubscription.id", index=True)
+    media_job_id: int = Field(foreign_key="mediajob.id", index=True)
+    resolution: str
+    audio: str
+    hdr: str
+    size_bytes: Optional[int] = None
+    score_version: str
+    quality_score: list[int] = Field(sa_column=Column(JSON, nullable=False))
+    recorded_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class SubscriptionEvent(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_subscription_event_dedupe"),
+        Index(
+            "uq_subscriptionevent_release_match",
+            "subscription_release_id",
+            "kind",
+            unique=True,
+            sqlite_where=text("kind = 'RELEASE_MATCH' AND subscription_release_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_subscriptionevent_upgrade_proposal",
+            "target_key",
+            "subscription_release_id",
+            "kind",
+            unique=True,
+            sqlite_where=text(
+                "kind = 'UPGRADE_PROPOSAL' AND target_key IS NOT NULL "
+                "AND subscription_release_id IS NOT NULL"
+            ),
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    subscription_id: int = Field(foreign_key="mediasubscription.id", index=True)
+    subscription_release_id: Optional[int] = Field(
+        default=None, foreign_key="subscriptionrelease.id", index=True
+    )
+    media_type: MediaType
+    target_key: Optional[str] = Field(default=None, index=True)
+    kind: SubscriptionEventKind
+    dedupe_key: str = Field(index=True)
+    title: str
+    body: str
+    prior_quality_score: Optional[list[int]] = Field(default=None, sa_column=Column(JSON))
+    current_quality_score: Optional[list[int]] = Field(default=None, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+    read_at: Optional[datetime] = None
+
+
+class NotificationDeliveryAttempt(SQLModel, table=True):
+    __table_args__ = (UniqueConstraint("event_id", "channel", name="uq_delivery_event_channel"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    event_id: int = Field(foreign_key="subscriptionevent.id", index=True)
+    channel: NotificationChannel
+    outcome: DeliveryOutcome = Field(default=DeliveryOutcome.SKIPPED)
+    attempted_at: datetime = Field(default_factory=_utcnow)
+    provider_message_id: Optional[str] = None
+    error_summary: Optional[str] = None
 
 
 class SubscriptionReleaseScope(SQLModel, table=True):
