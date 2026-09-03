@@ -18,6 +18,43 @@ import { normalizeActiveJobsSnapshot } from "./active_jobs_payload.mjs";
     return String(status).replace(/_/g, " ");
   }
 
+  function paddedNumber(value) {
+    return Number.isSafeInteger(value) && value > 0 ? String(value).padStart(2, "0") : "?";
+  }
+
+  function episodeLabel(episodeSet, episode) {
+    if (episodeSet) {
+      try {
+        const episodes = JSON.parse(episodeSet);
+        if (Array.isArray(episodes) && episodes.every((value) => Number.isSafeInteger(value) && value > 0)) {
+          const unique = [...new Set(episodes)].sort((a, b) => a - b);
+          const ranges = [];
+          let start = unique[0];
+          let end = start;
+          unique.slice(1).forEach((value) => {
+            if (value === end + 1) {
+              end = value;
+              return;
+            }
+            ranges.push([start, end]);
+            start = end = value;
+          });
+          ranges.push([start, end]);
+          return ranges
+            .map(([first, last]) => `E${paddedNumber(first)}${first === last ? "" : `-E${paddedNumber(last)}`}`)
+            .join(",");
+        }
+      } catch (error) {
+        // Fall back to the single-episode value for malformed legacy data.
+      }
+    }
+    return `E${paddedNumber(episode)}`;
+  }
+
+  function tvEpisodeLabel(job) {
+    return `S${paddedNumber(job.season)}${episodeLabel(job.episode_set, job.episode)}`;
+  }
+
   function updateCount(element, count, label) {
     if (!element) return;
     element.textContent = String(count);
@@ -55,6 +92,7 @@ import { normalizeActiveJobsSnapshot } from "./active_jobs_payload.mjs";
     const idLabel = row.querySelector("[data-job-id-label]");
     const typeLabel = row.querySelector("[data-job-type]");
     const titleLink = row.querySelector("[data-job-title]");
+    const episode = row.querySelector("[data-job-episode]");
     const statusLabel = row.querySelector("[data-job-status-label]");
     const deleteForm = row.querySelector("[data-job-delete-form]");
     if (idLabel) idLabel.textContent = `#${id}`;
@@ -62,6 +100,10 @@ import { normalizeActiveJobsSnapshot } from "./active_jobs_payload.mjs";
     if (titleLink) {
       titleLink.textContent = title;
       titleLink.href = `/jobs/${id}`;
+    }
+    if (episode) {
+      episode.hidden = type !== "tv";
+      episode.textContent = type === "tv" ? tvEpisodeLabel(job) : "";
     }
     if (badge) {
       Array.from(badge.classList)

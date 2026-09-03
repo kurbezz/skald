@@ -45,6 +45,9 @@ def active_jobs_payload(engine) -> dict:
                 "id": job.id,
                 "type": job.type.value,
                 "title": job.title,
+                "season": job.season,
+                "episode": job.episode,
+                "episode_set": job.episode_set,
                 "status": job.status.value,
                 "progress": job.progress,
             }
@@ -115,6 +118,14 @@ def _episode_set_detail_context(job: Optional[MediaJob]) -> dict[str, str]:
         for episode_range in episode_set_input.split(",")
     )
     return {"episode_label": episode_label, "episode_set_input": episode_set_input}
+
+
+def _tv_episode_label(job: MediaJob) -> str:
+    """Return the compact season/episode label used by job-list TV rows."""
+    episode_label = _episode_set_detail_context(job)["episode_label"]
+    season = f"{job.season:02d}" if job.season else "?"
+    episode = f"E{job.episode:02d}" if job.episode else "E?"
+    return f"S{season}{episode_label or episode}"
 
 
 @router.post("/grab")
@@ -246,6 +257,11 @@ async def list_jobs(request: Request, tab: str = "active"):
             "tab": tab,
             "active_count": len(active_jobs),
             "completed_count": len(completed_jobs),
+            "tv_episode_labels": {
+                job.id: _tv_episode_label(job)
+                for job in jobs
+                if job.type == MediaType.TV and job.id is not None
+            },
         },
     )
 

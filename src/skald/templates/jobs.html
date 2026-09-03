@@ -36,7 +36,12 @@
         <tr data-job-row data-job-id="{{ job.id }}" data-job-status="{{ job.status.value }}">
           <td><span class="job-id" data-job-id-label>#{{ job.id }}</span></td>
           <td class="cell-muted" data-job-type>{{ job.type.value }}</td>
-          <td><a class="job-link" data-job-title href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
+          <td>
+            <a class="job-link" data-job-title href="/jobs/{{ job.id }}">{{ job.title }}</a>
+            {% if job.type.value == "tv" %}
+            <div class="cell-muted" data-job-episode>{{ tv_episode_labels[job.id] }}</div>
+            {% endif %}
+          </td>
           <td>
             <span class="badge badge-{{ job.status.value }}" data-job-status-badge>
               <span class="badge-dot" aria-hidden="true"></span><span data-job-status-label>{{ job.status.value.replace('_', ' ') }}</span>
@@ -72,7 +77,10 @@
     <tr data-job-row>
       <td><span class="job-id" data-job-id-label></span></td>
       <td class="cell-muted" data-job-type></td>
-      <td><a class="job-link" data-job-title></a></td>
+      <td>
+        <a class="job-link" data-job-title></a>
+        <div class="cell-muted" data-job-episode hidden></div>
+      </td>
       <td>
         <span class="badge" data-job-status-badge>
           <span class="badge-dot" aria-hidden="true"></span><span data-job-status-label></span>
@@ -113,7 +121,12 @@
       <tr>
         <td><span class="job-id">#{{ job.id }}</span></td>
         <td class="cell-muted">{{ job.type.value }}</td>
-        <td><a class="job-link" href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
+        <td>
+          <a class="job-link" href="/jobs/{{ job.id }}">{{ job.title }}</a>
+          {% if job.type.value == "tv" %}
+          <div class="cell-muted">{{ tv_episode_labels[job.id] }}</div>
+          {% endif %}
+        </td>
         <td>
           <span class="badge badge-{{ job.status.value }}">
             <span class="badge-dot"></span>{{ job.status.value.replace('_', ' ') }}

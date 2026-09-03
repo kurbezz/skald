@@ -779,6 +779,46 @@ def test_job_detail_supplies_safe_episode_set_context(
     assert contexts[-1]["episode_set_input"] == expected_input
 
 
+def test_job_lists_render_tv_season_and_episode_labels(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "job-list-tv-labels.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        with Session(app.state.engine) as session:
+            active_job = MediaJob(
+                type=MediaType.TV,
+                title="Active Show",
+                season=1,
+                episode=1,
+                episode_set="[1,2,3]",
+                release_title="Active.Show.S01E01-E03",
+                qbit_hash="active-hash",
+                category="skald-tv",
+                status=JobStatus.DOWNLOADING,
+            )
+            completed_job = MediaJob(
+                type=MediaType.TV,
+                title="Completed Show",
+                season=2,
+                episode=5,
+                release_title="Completed.Show.S02E05",
+                qbit_hash="completed-hash",
+                category="skald-tv",
+                status=JobStatus.ORGANIZED,
+            )
+            session.add(active_job)
+            session.add(completed_job)
+            session.commit()
+
+        active_response = client.get("/jobs?tab=active")
+        completed_response = client.get("/jobs?tab=completed")
+
+    assert active_response.status_code == 200
+    assert 'data-job-episode>S01E01-E03</div>' in active_response.text
+    assert completed_response.status_code == 200
+    assert 'class="cell-muted">S02E05</div>' in completed_response.text
+
+
 def test_active_jobs_websocket_streams_changed_snapshot(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "active-ws.db"))
     app = create_app()
@@ -808,6 +848,9 @@ def test_active_jobs_websocket_streams_changed_snapshot(tmp_path, monkeypatch):
                         "id": job_id,
                         "type": "movie",
                         "title": "Active WS Movie",
+                        "season": None,
+                        "episode": None,
+                        "episode_set": None,
                         "status": "downloading",
                         "progress": 0.25,
                     }

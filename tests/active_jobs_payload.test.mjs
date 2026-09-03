@@ -10,6 +10,9 @@ test("normalizes a valid active-jobs snapshot", () => {
         id: 42,
         type: "movie",
         title: "Example Movie",
+        season: null,
+        episode: null,
+        episode_set: null,
         status: "downloading",
         progress: 0.61,
       },
@@ -22,7 +25,7 @@ test("normalizes a valid active-jobs snapshot", () => {
 
 test("normalizes a deleting active-job snapshot", () => {
   const payload = {
-    jobs: [{ id: 42, type: "movie", title: "Example Movie", status: "deleting", progress: 1 }],
+    jobs: [{ id: 42, type: "movie", title: "Example Movie", season: null, episode: null, episode_set: null, status: "deleting", progress: 1 }],
     completed_count: 7,
   };
 
@@ -44,6 +47,9 @@ test("rejects fractional IDs and unsupported media types", () => {
     id: 42,
     type: "movie",
     title: "Example Movie",
+    season: null,
+    episode: null,
+    episode_set: null,
     status: "downloading",
     progress: 0.61,
   };
@@ -56,6 +62,15 @@ test("rejects fractional IDs and unsupported media types", () => {
     normalizeActiveJobsSnapshot({ jobs: [{ ...job, type: "music" }], completed_count: 0 }),
     null
   );
+});
+
+test("preserves TV season and episode fields", () => {
+  const payload = {
+    jobs: [{ id: 42, type: "tv", title: "Example Show", season: 1, episode: 1, episode_set: "[1,2,3]", status: "downloading", progress: 0.61 }],
+    completed_count: 0,
+  };
+
+  assert.deepEqual(normalizeActiveJobsSnapshot(payload), payload);
 });
 
 test("rejects malformed root payloads", () => {

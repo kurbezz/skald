@@ -14,12 +14,18 @@ export function normalizeActiveJobsSnapshot(payload) {
     if (typeof job.title !== "string" || !MEDIA_TYPES.has(job.type)) return null;
     if (typeof job.status !== "string" || !ACTIVE_STATUSES.has(job.status)) return null;
     if (!Number.isFinite(job.progress)) return null;
+    if (job.season !== null && !Number.isSafeInteger(job.season)) return null;
+    if (job.episode !== null && !Number.isSafeInteger(job.episode)) return null;
+    if (job.episode_set !== null && typeof job.episode_set !== "string") return null;
 
     ids.add(job.id);
     jobs.push({
       id: job.id,
       type: job.type,
       title: job.title,
+      season: job.season,
+      episode: job.episode,
+      episode_set: job.episode_set,
       status: job.status,
       progress: job.progress,
     });
