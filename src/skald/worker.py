@@ -1,13 +1,16 @@
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
 from sqlalchemy import exists, update
 from sqlmodel import Session, select
 
+from skald.config import Settings
 from skald.episodes import deserialize_episode_set
+from skald.indexer.base import IndexerClient
 from skald.lifecycle import FileIdentity, try_job_lock
 from skald.models import (
     FileLifecycle,
@@ -16,6 +19,7 @@ from skald.models import (
     MediaType,
     OrganizationMode,
     OrganizedFile,
+    QualityProfile,
 )
 from skald.organizer import (
     FileOperationError,
@@ -34,6 +38,8 @@ from skald.organizer import (
     tv_target_path,
 )
 from skald.qbittorrent import QbittorrentClient
+from skald.quality import default_quality_profile
+from skald.subscriptions import scan_due_subscriptions
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +66,10 @@ async def poll_once(
     qbit: QbittorrentClient,
     movies_root: str,
     tv_root: str,
+    *,
+    indexer: IndexerClient | None = None,
+    subscription_check_interval_seconds: int = 6 * 60 * 60,
+    settings: Settings | None = None,
 ) -> None:
     try:
         jobs = session.exec(select(MediaJob).where(MediaJob.status.in_(ACTIVE_STATUSES))).all()
@@ -102,6 +112,22 @@ async def poll_once(
             durable_job.error_message = str(exc)
             session.add(durable_job)
             session.commit()
+
+    if indexer is not None:
+        try:
+            await scan_due_subscriptions(
+                session,
+                indexer,
+                qbit=qbit,
+                settings=settings,
+                profile_provider=lambda: session.get(QualityProfile, 1)
+                or default_quality_profile(),
+                interval_seconds=subscription_check_interval_seconds,
+                now=lambda: datetime.now(timezone.utc),
+            )
+        except Exception:  # noqa: BLE001 - subscription scanning cannot stop job polling
+            logger.exception("failed to scan due subscriptions")
+            session.rollback()
 
 
 async def process_job(
@@ -915,12 +941,23 @@ async def worker_loop(
     movies_root: str,
     tv_root: str,
     poll_interval_seconds: int,
+    indexer: IndexerClient | None = None,
+    subscription_check_interval_seconds: int = 6 * 60 * 60,
+    settings: Settings | None = None,
 ) -> None:
     while True:
         session = None
         try:
             with session_factory() as session:
-                await poll_once(session, qbit, movies_root, tv_root)
+                await poll_once(
+                    session,
+                    qbit,
+                    movies_root,
+                    tv_root,
+                    indexer=indexer,
+                    subscription_check_interval_seconds=subscription_check_interval_seconds,
+                    settings=settings,
+                )
         except Exception:  # noqa: BLE001 - keep the worker alive across transient database failures
             logger.exception("worker poll failed")
             if session is not None:

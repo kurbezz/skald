@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Quality — Skald{% endblock %}
+{% block content %}
+{% set quality = profile or quality_profile %}
+<div class="page-head">
+  <div>
+    <h1>Quality<span class="accent-dot">.</span></h1>
+    <p class="page-sub">Set the release baseline used by automatic movie downloads.</p>
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert-error" role="alert">{{ error }}</div>
+{% endif %}
+
+<form method="post" action="/quality" class="quality-form panel">
+  <section class="quality-section" aria-labelledby="quality-resolution-heading">
+    <div class="quality-section-head">
+      <h2 id="quality-resolution-heading">Allowed resolution</h2>
+      <p>Only releases with one of these labels can be selected.</p>
+    </div>
+    <fieldset class="quality-options">
+      <legend class="visually-hidden">Allowed resolutions</legend>
+      <label class="quality-choice">
+        <input type="checkbox" name="allowed_resolutions" value="720p"{% if "720p" in quality.allowed_resolutions %} checked{% endif %}>
+        <span class="quality-choice-label">720p</span>
+        <span class="quality-choice-note">Compact</span>
+      </label>
+      <label class="quality-choice">
+        <input type="checkbox" name="allowed_resolutions" value="1080p"{% if "1080p" in quality.allowed_resolutions %} checked{% endif %}>
+        <span class="quality-choice-label">1080p</span>
+        <span class="quality-choice-note">Full HD</span>
+      </label>
+      <label class="quality-choice">
+        <input type="checkbox" name="allowed_resolutions" value="2160p"{% if "2160p" in quality.allowed_resolutions or "4k" in quality.allowed_resolutions %} checked{% endif %}>
+        <span class="quality-choice-label">4K</span>
+        <span class="quality-choice-note">2160p</span>
+      </label>
+    </fieldset>
+  </section>
+
+  <section class="quality-section quality-section--split" aria-labelledby="quality-reliability-heading">
+    <div class="quality-section-head">
+      <h2 id="quality-reliability-heading">Reliability</h2>
+      <p>Prefer releases that are available now, not just listed.</p>
+    </div>
+    <label class="quality-field" for="minimum-seeders">
+      <span>Minimum seeders</span>
+      <input id="minimum-seeders" type="number" name="minimum_seeders" min="0" value="{{ quality.minimum_seeders }}" required>
+      <small>At least this many seeders are required.</small>
+    </label>
+  </section>
+
+  <section class="quality-section quality-section--split" aria-labelledby="quality-exclusions-heading">
+    <div class="quality-section-head">
+      <h2 id="quality-exclusions-heading">Exclude title tokens</h2>
+      <p>Skip releases whose title contains any of these words.</p>
+    </div>
+    <label class="quality-field quality-field--wide" for="excluded-tokens">
+      <span>Excluded tokens</span>
+      <input id="excluded-tokens" class="quality-token-input" type="text" name="excluded_tokens" value="{{ quality.excluded_tokens | join(', ') }}" placeholder="CAM, TS, TeleSync" required>
+      <small>Separate tokens with commas. Matching is case-insensitive.</small>
+    </label>
+  </section>
+
+  <div class="quality-form-footer">
+    <p>Automatic downloads remain opt-in for each subscription.</p>
+    <button type="submit">Save quality profile</button>
+  </div>
+</form>
+{% endblock %}

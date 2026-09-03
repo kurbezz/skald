@@ -111,6 +111,13 @@ def migrate_schema(engine) -> None:
 def _migrate_schema(engine) -> None:
     """Apply schema changes while preserving existing mediajob encodings."""
     with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE IF NOT EXISTS qualityprofile ("
+            "id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1), "
+            "allowed_resolutions JSON NOT NULL, excluded_tokens JSON NOT NULL, "
+            "minimum_seeders INTEGER NOT NULL, updated_at DATETIME NOT NULL)"
+        )
+
         columns = connection.exec_driver_sql("PRAGMA table_info(mediajob)").fetchall()
         column_names = {column[1] for column in columns}
         if "library_path" not in column_names:
@@ -125,6 +132,59 @@ def _migrate_schema(engine) -> None:
             )
         if "operation_token" not in column_names:
             connection.exec_driver_sql("ALTER TABLE mediajob ADD COLUMN operation_token VARCHAR")
+
+        subscription_columns = connection.exec_driver_sql(
+            "PRAGMA table_info(mediasubscription)"
+        ).fetchall()
+        subscription_column_names = {column[1] for column in subscription_columns}
+        if subscription_columns and "auto_download" not in subscription_column_names:
+            connection.exec_driver_sql(
+                "ALTER TABLE mediasubscription ADD COLUMN auto_download BOOLEAN NOT NULL DEFAULT 0"
+            )
+        if subscription_columns and "auto_grabbed_release_id" not in subscription_column_names:
+            connection.exec_driver_sql(
+                "ALTER TABLE mediasubscription ADD COLUMN auto_grabbed_release_id INTEGER"
+            )
+
+        connection.exec_driver_sql(
+            "CREATE TABLE IF NOT EXISTS tvsubscriptionscope ("
+            "id INTEGER NOT NULL PRIMARY KEY, "
+            "subscription_id INTEGER NOT NULL REFERENCES mediasubscription(id) ON DELETE CASCADE, "
+            "tmdb_series_id INTEGER NOT NULL, tmdb_season_id INTEGER, tmdb_episode_id INTEGER, "
+            "season_number INTEGER, episode_number INTEGER, "
+            "includes_future_content BOOLEAN NOT NULL DEFAULT 0, "
+            "CONSTRAINT ck_tvsubscriptionscope_shape CHECK ("
+            "(includes_future_content = 1 AND tmdb_season_id IS NULL AND tmdb_episode_id IS NULL "
+            "AND season_number IS NULL AND episode_number IS NULL) "
+            "OR (includes_future_content = 0 AND tmdb_season_id IS NOT NULL AND season_number IS NOT NULL "
+            "AND ((tmdb_episode_id IS NULL AND episode_number IS NULL) "
+            "OR (tmdb_episode_id IS NOT NULL AND episode_number IS NOT NULL))))"
+            ")"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_tvsubscriptionscope_subscription_id "
+            "ON tvsubscriptionscope (subscription_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_tvsubscriptionscope_tmdb_series_id "
+            "ON tvsubscriptionscope (tmdb_series_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE IF NOT EXISTS subscriptionreleasescope ("
+            "id INTEGER NOT NULL PRIMARY KEY, "
+            "subscription_release_id INTEGER NOT NULL REFERENCES subscriptionrelease(id) ON DELETE CASCADE, "
+            "tv_subscription_scope_id INTEGER NOT NULL REFERENCES tvsubscriptionscope(id) ON DELETE CASCADE, "
+            "CONSTRAINT uq_subscription_release_scope "
+            "UNIQUE (subscription_release_id, tv_subscription_scope_id))"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_subscriptionreleasescope_subscription_release_id "
+            "ON subscriptionreleasescope (subscription_release_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_subscriptionreleasescope_tv_subscription_scope_id "
+            "ON subscriptionreleasescope (tv_subscription_scope_id)"
+        )
 
         table_exists = connection.exec_driver_sql(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'organizedfile'"

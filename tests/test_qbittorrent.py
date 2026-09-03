@@ -1,6 +1,6 @@
 import qbittorrentapi
 
-from skald.qbittorrent import QbittorrentClient, extract_hash_from_magnet
+from skald.qbittorrent import QbittorrentClient, TorrentFile, extract_hash_from_magnet
 
 
 def test_extract_hash_from_magnet():
@@ -26,13 +26,16 @@ class FakeQbitApi:
         self.logged_in = False
         self.added = []
         self.deleted = []
+        self.file_priorities = []
+        self.resumed = []
+        self.files = []
         self.torrents = []
 
     def auth_log_in(self):
         self.logged_in = True
 
-    def torrents_add(self, urls, category):
-        self.added.append((urls, category))
+    def torrents_add(self, urls, category, is_paused=False):
+        self.added.append((urls, category, is_paused))
         self.torrents.append(FakeTorrent("newhash123"))
 
     def torrents_info(self, category=None, torrent_hashes=None):
@@ -43,12 +46,21 @@ class FakeQbitApi:
     def torrents_delete(self, delete_files=None, torrent_hashes=None):
         self.deleted.append((delete_files, torrent_hashes))
 
+    def torrents_files(self, torrent_hash):
+        return self.files
+
+    def torrents_file_priority(self, torrent_hash, file_ids, priority):
+        self.file_priorities.append((torrent_hash, file_ids, priority))
+
+    def torrents_resume(self, torrent_hashes):
+        self.resumed.append(torrent_hashes)
+
 
 class ConflictQbitApi(FakeQbitApi):
     """Simulates qBittorrent rejecting a duplicate torrent with 409."""
 
-    def torrents_add(self, urls, category):
-        self.added.append((urls, category))
+    def torrents_add(self, urls, category, is_paused=False):
+        self.added.append((urls, category, is_paused))
         raise qbittorrentapi.exceptions.Conflict409Error("Conflict")
 
 
@@ -64,7 +76,7 @@ def test_add_torrent_extracts_hash_from_magnet():
 
     assert torrent_hash == "aabbccddeeff00112233445566778899aabbccdd"
     assert fake.logged_in
-    assert fake.added == [(magnet, "skald-movie")]
+    assert fake.added == [(magnet, "skald-movie", False)]
 
 
 def test_add_torrent_magnet_ignores_conflict_for_duplicate():
@@ -137,3 +149,40 @@ def test_get_status_not_complete_while_downloading():
     status = client.get_status("hash1")
 
     assert status.is_complete is False
+
+
+def test_add_paused_torrent_returns_magnet_hash_and_requests_paused_add():
+    fake = FakeQbitApi()
+    client = QbittorrentClient(
+        host="http://localhost:8080", username="admin", password="pw",
+        client_factory=lambda: fake,
+    )
+    magnet = "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD&dn=Test"
+
+    torrent_hash = client.add_torrent_paused(magnet, category="skald-tv")
+
+    assert torrent_hash == "aabbccddeeff00112233445566778899aabbccdd"
+    assert fake.added == [(magnet, "skald-tv", True)]
+
+
+def test_torrent_files_priorities_and_resume_use_file_indexes():
+    fake = FakeQbitApi()
+    fake.files = [
+        type("ApiFile", (), {"index": 8, "name": "Show.S01E03.mkv"})(),
+        type("ApiFile", (), {"index": 21, "name": "Show.S01E04.mkv"})(),
+    ]
+    client = QbittorrentClient(
+        host="http://localhost:8080", username="admin", password="pw",
+        client_factory=lambda: fake,
+    )
+
+    assert client.get_torrent_files("hash1") == [
+        TorrentFile(index=8, name="Show.S01E03.mkv"),
+        TorrentFile(index=21, name="Show.S01E04.mkv"),
+    ]
+    client.set_file_priority("hash1", [8, 21], priority=0)
+    client.set_file_priority("hash1", [8], priority=1)
+    client.resume_torrent("hash1")
+
+    assert fake.file_priorities == [("hash1", [8, 21], 0), ("hash1", [8], 1)]
+    assert fake.resumed == ["hash1"]

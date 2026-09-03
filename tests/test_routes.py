@@ -11,6 +11,7 @@ from starlette.testclient import WebSocketDenialResponse
 
 from skald.indexer.base import ReleaseResult
 from skald.lifecycle import file_identity
+from skald import main as main_module
 from skald.main import create_app
 from skald.models import FileLifecycle, JobStatus, MediaJob, MediaType, OrganizationMode, OrganizedFile
 from skald.routes import jobs as jobs_routes
@@ -616,6 +617,36 @@ def test_root_redirects_to_jobs(tmp_path, monkeypatch):
         response = client.get("/", follow_redirects=False)
         assert response.status_code in (302, 307)
         assert response.headers["location"] == "/jobs"
+
+
+def test_lifespan_closes_original_tmdb_when_worker_shutdown_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "tmdb-lifespan.db"))
+
+    class RecordingTmdb:
+        instances = []
+
+        def __init__(self, token):
+            self.token = token
+            self.closed = False
+            self.instances.append(self)
+
+        async def aclose(self):
+            self.closed = True
+
+    async def failing_worker_loop(**_):
+        raise RuntimeError("worker shutdown failed")
+
+    monkeypatch.setattr(main_module, "TmdbClient", RecordingTmdb)
+    monkeypatch.setattr(main_module, "worker_loop", failing_worker_loop)
+    app = create_app()
+
+    with pytest.raises(RuntimeError, match="worker shutdown failed"):
+        with TestClient(app):
+            original = app.state.tmdb
+            app.state.tmdb = RecordingTmdb("replacement")
+
+    assert original.closed
+    assert not app.state.tmdb.closed
 
 
 def test_routes_require_auth_when_configured(tmp_path, monkeypatch):

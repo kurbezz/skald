@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}{{ subscription.title }} — Skald{% endblock %}
+{% block content %}
+<nav class="detail-crumbs" aria-label="Breadcrumb">
+  <a href="/subscriptions">Subscriptions</a>
+  <span aria-hidden="true">/</span>
+  <span aria-current="page">{{ subscription.title }}</span>
+</nav>
+
+<section class="tv-detail-hero">
+  <div class="tv-detail-poster" aria-hidden="true">
+    {% if subscription.poster_url %}
+    <img src="{{ subscription.poster_url }}" alt="" loading="eager">
+    {% else %}
+    <span>TV</span>
+    {% endif %}
+  </div>
+  <div class="tv-detail-copy">
+    <p class="tv-detail-eyebrow">TV subscription</p>
+    <h1>{{ subscription.title }}<span class="accent-dot">.</span></h1>
+    {% if subscription.original_title and subscription.original_title != subscription.title %}
+    <p class="tv-detail-original">{{ subscription.original_title }}</p>
+    {% endif %}
+    <div class="tv-detail-meta">
+      {% if subscription.year %}<span>{{ subscription.year }}</span>{% endif %}
+      {% if subscription.is_active %}
+      <span class="badge badge-organized"><span class="badge-dot" aria-hidden="true"></span>Watching</span>
+      {% else %}
+      <span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>Paused</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="tv-detail-actions">
+    <form method="post" action="/subscriptions/{{ subscription.id }}/toggle">
+      <button type="submit" class="btn-quiet">{% if subscription.is_active %}Pause watching{% else %}Resume watching{% endif %}</button>
+    </form>
+    <a class="btn tv-back-link" href="/subscriptions">Back to subscriptions</a>
+  </div>
+</section>
+
+{% if error %}
+<div class="alert alert-error" role="alert">{{ error }}</div>
+{% endif %}
+
+<div class="tv-detail-layout">
+  <section class="panel tv-scope" aria-labelledby="scope-title">
+    <div class="tv-section-heading">
+      <div>
+        <p class="section-kicker">Release scope</p>
+        <h2 id="scope-title">What should Skald watch for?</h2>
+        <p>Choose the whole series, or save a precise set of seasons and episodes.</p>
+      </div>
+      {% if series_scope_active %}
+      <span class="badge badge-organized"><span class="badge-dot" aria-hidden="true"></span>Entire series</span>
+      {% else %}
+      <span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>Custom selection</span>
+      {% endif %}
+    </div>
+
+    <div class="tv-scope-body">
+      <form method="post" action="/subscriptions/{{ subscription.id }}/scope" class="tv-series-form">
+        <input type="hidden" name="scope_mode" value="series">
+        <div class="tv-series-choice">
+          <div class="tv-choice-icon" aria-hidden="true">∞</div>
+          <div>
+            <h3>Watch the entire series</h3>
+            <p>Includes every current season, specials, and episodes that air in the future.</p>
+          </div>
+          <button type="submit"{% if series_scope_active %} class="btn-quiet"{% endif %}>{% if series_scope_active %}Selected{% else %}Watch series{% endif %}</button>
+        </div>
+      </form>
+
+      <div class="tv-scope-divider"><span>or set a custom scope</span></div>
+
+      <form method="post" action="/subscriptions/{{ subscription.id }}/scope" class="tv-manual-form">
+        <input type="hidden" name="scope_mode" value="manual">
+        <div class="tv-manual-intro">
+          <div>
+            <h3>Pick seasons and episodes</h3>
+            <p>A selected season includes its pack and every individual episode. Open a season to choose only specific episodes.</p>
+          </div>
+          <button type="submit">Save selection</button>
+        </div>
+
+        {% if seasons %}
+        <div class="tv-season-list">
+          {% for season in seasons %}
+          <details class="tv-season"{% if season.tmdb_id in selected_season_ids or season.episodes | selectattr('tmdb_id', 'in', selected_episode_ids) | list %} open{% endif %}>
+            <summary>
+              <span class="tv-season-summary-copy">
+                <span class="tv-season-title">{% if season.number == 0 %}Specials{% else %}{{ season.name or 'Season ' ~ season.number }}{% endif %}</span>
+                <span class="tv-season-count">{{ season.episodes | length }} episode{% if season.episodes | length != 1 %}s{% endif %}</span>
+              </span>
+              <span class="tv-disclosure" aria-hidden="true">⌄</span>
+            </summary>
+            <div class="tv-season-body">
+              <label class="tv-check tv-check--season">
+                <input type="checkbox" name="season_ids" value="{{ season.tmdb_id }}"{% if season.tmdb_id in selected_season_ids %} checked{% endif %}>
+                <span class="tv-check-box" aria-hidden="true"></span>
+                <span><strong>All of {% if season.number == 0 %}the specials{% else %}{{ season.name or 'this season' }}{% endif %}</strong><small>Includes season packs and individual episodes.</small></span>
+              </label>
+              {% if season.episodes %}
+              <div class="tv-episode-list" role="group" aria-label="Episodes in {{ season.name or 'season ' ~ season.number }}">
+                {% for episode in season.episodes %}
+                <label class="tv-check tv-check--episode">
+                  <input type="checkbox" name="episode_ids" value="{{ episode.tmdb_id }}"{% if episode.tmdb_id in selected_episode_ids %} checked{% endif %}>
+                  <span class="tv-check-box" aria-hidden="true"></span>
+                  <span class="tv-episode-number">E{{ '%02d' | format(episode.number) }}</span>
+                  <span class="tv-episode-title">{{ episode.name or 'Episode ' ~ episode.number }}</span>
+                </label>
+                {% endfor %}
+              </div>
+              {% else %}
+              <p class="tv-season-empty">Episodes for this season are not available yet.</p>
+              {% endif %}
+            </div>
+          </details>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="tv-season-empty-state">
+          <span aria-hidden="true">—</span>
+          <p>Season information is unavailable right now. You can still watch the entire series.</p>
+        </div>
+        {% endif %}
+      </form>
+    </div>
+  </section>
+
+  <aside class="tv-detail-sidebar" aria-label="Subscription settings">
+    <section class="panel tv-auto-card">
+      <p class="section-kicker">Automatic downloads</p>
+      <h2>{% if subscription.auto_download %}On{% else %}Off{% endif %}</h2>
+      <p>{% if subscription.auto_download %}Matching releases are queued automatically.{% else %}Matching releases stay in Latest releases for you to review.{% endif %}</p>
+      <form method="post" action="/subscriptions/{{ subscription.id }}/auto-download">
+        <button type="submit" class="{% if subscription.auto_download %}btn-quiet{% endif %}">{% if subscription.auto_download %}Turn off auto-download{% else %}Turn on auto-download{% endif %}</button>
+      </form>
+      <p class="tv-auto-note">Uses your <a href="/quality">quality profile</a> after a release matches this scope.</p>
+    </section>
+
+    <section class="panel tv-detail-status">
+      <p class="section-kicker">Check schedule</p>
+      <dl>
+        <div><dt>Last check</dt><dd>{{ subscription.last_checked_at or 'Not checked yet' }}</dd></div>
+        <div><dt>Next check</dt><dd>{{ subscription.next_check_at }}</dd></div>
+      </dl>
+      {% if subscription.last_error %}
+      <p class="tv-status-error">{{ subscription.last_error }}</p>
+      {% endif %}
+    </section>
+  </aside>
+</div>
+{% endblock %}

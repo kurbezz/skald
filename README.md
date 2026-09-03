@@ -11,6 +11,21 @@ send to qBittorrent, wait for download, organize into a Jellyfin library.
 
 Open http://127.0.0.1:8000/search
 
+## Subscriptions
+
+To search the TMDB catalog, create a TMDB API Read Access Token and add it to
+your `.env`:
+
+    TMDB_READ_ACCESS_TOKEN=<your TMDB API Read Access Token>
+
+Subscriptions check for releases every 6 hours by default. Set
+`SUBSCRIPTION_CHECK_INTERVAL_SECONDS` to use a different interval.
+Subscriptions only report matching releases; they do not automatically start
+or download anything.
+
+The required TMDB attribution is displayed in the subscriptions page: “This
+product uses the TMDB API but is not endorsed or certified by TMDB.”
+
 ## Tests
 
     uv run pytest -v

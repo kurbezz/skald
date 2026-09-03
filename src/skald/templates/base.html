@@ -17,6 +17,8 @@
       <nav class="main-nav">
         <a href="/search" class="{% if request.url.path.startswith('/search') %}active{% endif %}">Search</a>
         <a href="/jobs" class="{% if request.url.path.startswith('/jobs') %}active{% endif %}">Jobs</a>
+        <a href="/subscriptions" class="{% if request.url.path.startswith('/subscriptions') %}active{% endif %}">Subscriptions</a>
+        <a href="/quality" class="{% if request.url.path.startswith('/quality') %}active{% endif %}">Quality</a>
       </nav>
       {% endif %}
       <div class="topbar-spacer"></div>

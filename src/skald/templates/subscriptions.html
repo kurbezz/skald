@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block title %}Subscriptions — Skald{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Subscriptions<span class="accent-dot">.</span></h1>
+    <p class="page-sub">Keep an eye on movies and series without starting a download.</p>
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert-error" role="alert">{{ error }}</div>
+{% endif %}
+
+{% if not tmdb_configured %}
+<div class="alert alert-error" role="alert">TMDB is not configured. Add a token to search the catalog.</div>
+{% endif %}
+
+<form method="get" action="/subscriptions" class="search-form panel" role="search">
+  <label class="visually-hidden" for="catalog-query">Search the TMDB catalog</label>
+  <input id="catalog-query" type="text" name="q" value="{{ q }}" placeholder="Find a movie or series&hellip;"{% if not tmdb_configured %} disabled{% endif %}>
+  <button type="submit"{% if not tmdb_configured %} disabled{% endif %}>Search catalog</button>
+</form>
+
+{% if catalog_results %}
+<p class="page-sub">Catalog matches</p>
+<div class="panel table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Poster</th>
+        <th>Title</th>
+        <th>Type</th>
+        <th>Year</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for result in catalog_results %}
+      <tr>
+        <td>
+          {% if result.poster_url %}
+          <img class="subscription-poster" src="{{ result.poster_url }}" alt="" loading="lazy">
+          {% else %}
+          <span class="cell-muted" aria-label="No poster">&mdash;</span>
+          {% endif %}
+        </td>
+        <td>
+          <span class="release-title">{{ result.title }}</span>
+          {% if result.original_title and result.original_title != result.title %}
+          <div class="cell-muted">{{ result.original_title }}</div>
+          {% endif %}
+        </td>
+        <td class="cell-muted">{{ result.type.value }}</td>
+        <td class="cell-muted">{{ result.year or '—' }}</td>
+        <td>
+          <form method="post" action="/subscriptions">
+            <input type="hidden" name="tmdb_id" value="{{ result.tmdb_id }}">
+            <input type="hidden" name="media_type" value="{{ result.type.value }}">
+            <button type="submit">Subscribe</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% elif q and tmdb_configured and not error %}
+<div class="panel empty-state">
+  <div class="glyph">&mdash;</div>
+  <p>No catalog matches for &ldquo;{{ q }}&rdquo;.</p>
+</div>
+{% endif %}
+
+<div class="page-head">
+  <div>
+    <h1>Watching<span class="accent-dot">.</span></h1>
+    <p class="page-sub">New releases appear here after the next check.</p>
+  </div>
+</div>
+
+{% if subscriptions %}
+<div class="panel table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Title</th>
+        <th>Type</th>
+        <th>State</th>
+        <th>Auto-download</th>
+        <th>Last check</th>
+        <th>Unread</th>
+        <th>Last error</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for subscription, unread_count in subscriptions %}
+      <tr>
+        <td>
+          {% if subscription.type.value == "tv" %}
+          <a class="release-title subscription-detail-link" href="/subscriptions/{{ subscription.id }}">{{ subscription.title }}</a>
+          {% else %}
+          <span class="release-title">{{ subscription.title }}</span>
+          {% endif %}
+          {% if subscription.year %}<span class="cell-muted"> ({{ subscription.year }})</span>{% endif %}
+        </td>
+        <td class="cell-muted">{{ subscription.type.value }}</td>
+        <td>
+          {% if subscription.is_active %}
+          <span class="badge badge-organized"><span class="badge-dot" aria-hidden="true"></span>Enabled</span>
+          {% else %}
+          <span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>Paused</span>
+          {% endif %}
+        </td>
+        <td class="subscription-auto">
+          <div class="subscription-auto-top">
+            {% if subscription.auto_download %}
+            <span class="badge badge-organized"><span class="badge-dot" aria-hidden="true"></span>On</span>
+            {% else %}
+            <span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>Off</span>
+            {% endif %}
+            <form method="post" action="/subscriptions/{{ subscription.id }}/auto-download">
+              <button type="submit" class="btn-quiet" aria-label="{% if subscription.auto_download %}Turn off{% else %}Turn on{% endif %} automatic downloads for {{ subscription.title }}">
+                {% if subscription.auto_download %}Turn off{% else %}Turn on{% endif %}
+              </button>
+            </form>
+          </div>
+          {% if subscription.type.value == "tv" %}
+          <p class="subscription-auto-note">Episode scope required before automatic download can run.</p>
+          {% elif subscription.auto_grabbed_release_id %}
+          <p class="subscription-auto-note">One matching release has already been queued.</p>
+          {% else %}
+          <p class="subscription-auto-note">Uses your <a href="/quality">quality profile</a> for new movie releases.</p>
+          {% endif %}
+        </td>
+        <td class="cell-muted">
+          <div><span class="visually-hidden">Last checked: </span>{{ subscription.last_checked_at or 'Not checked yet' }}</div>
+          <div><span class="visually-hidden">Next check: </span>Next: {{ subscription.next_check_at }}</div>
+        </td>
+        <td>
+          <span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>{{ unread_count }} unread</span>
+        </td>
+        <td class="{% if subscription.last_error %}subscription-error{% else %}cell-muted{% endif %}">{{ subscription.last_error or '—' }}</td>
+        <td>
+          <div class="subscription-actions">
+            <form method="post" action="/subscriptions/{{ subscription.id }}/toggle">
+              <button type="submit" class="btn-quiet" aria-label="{% if subscription.is_active %}Pause{% else %}Resume{% endif %} {{ subscription.title }}">{% if subscription.is_active %}Pause{% else %}Resume{% endif %}</button>
+            </form>
+            {% if unread_count %}
+            <form method="post" action="/subscriptions/{{ subscription.id }}/releases/read">
+              <button type="submit" class="btn-quiet" aria-label="Mark releases for {{ subscription.title }} as read">Mark read</button>
+            </form>
+            {% endif %}
+            <form method="post" action="/subscriptions/{{ subscription.id }}/delete">
+              <button type="submit" class="btn-danger" aria-label="Delete {{ subscription.title }} subscription">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel empty-state">
+  <div class="glyph">&mdash;</div>
+  <p>Nothing watched yet. Search the catalog to add something.</p>
+</div>
+{% endif %}
+
+<div class="page-head">
+  <div>
+    <h1>Latest releases<span class="accent-dot">.</span></h1>
+    <p class="page-sub">Found by your active subscriptions.</p>
+  </div>
+</div>
+
+{% if releases %}
+<div class="panel table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Release</th>
+        <th>Indexer</th>
+        <th>Size</th>
+        <th>Peers</th>
+        <th>Found</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for release in releases %}
+      <tr>
+        <td><span class="release-title">{{ release.release_title }}</span></td>
+        <td class="cell-muted">{{ release.indexer }}</td>
+        <td class="cell-muted">{{ (release.size_bytes / 1073741824) | round(2) }} GB</td>
+        <td><span class="seeders">&#9650;{{ release.seeders }}</span> <span class="leechers">&#9660;{{ release.leechers }}</span></td>
+        <td class="cell-muted">{{ release.discovered_at }}</td>
+        <td><a class="job-link" href="/search?q={{ release.release_title | urlencode }}">Search</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel empty-state">
+  <div class="glyph">&mdash;</div>
+  <p>No releases found yet.</p>
+</div>
+{% endif %}
+
+<p class="page-sub">This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+{% endblock %}

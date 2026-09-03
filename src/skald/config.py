@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     category_tv: str = "skald-tv"
 
     worker_poll_interval_seconds: int = 10
+    tmdb_read_access_token: str = ""
+    subscription_check_interval_seconds: int = 6 * 60 * 60
 
 
 def get_settings() -> Settings:

@@ -1,5 +1,6 @@
 import asyncio
 import errno
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -8,15 +9,20 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import StaticPool
 
 from skald.db import get_engine, migrate_schema
+from skald.config import Settings
 from skald.models import (
     FileLifecycle,
     JobStatus,
     MediaJob,
+    MediaSubscription,
     MediaType,
     OrganizationMode,
     OrganizedFile,
+    TvSubscriptionScope,
 )
-from skald.qbittorrent import TorrentStatus
+from skald.qbittorrent import TorrentFile, TorrentStatus
+from skald.indexer.base import ReleaseResult
+from skald.subscriptions import scan_due_subscriptions
 from skald.worker import (
     DeletionOutcome,
     poll_once,
@@ -36,6 +42,33 @@ class FakeQbit:
 
     def delete_torrent(self, torrent_hash: str, delete_files: bool = True) -> None:
         return None
+
+
+class FakeIndexer:
+    async def search(self, query: str):
+        return []
+
+
+class SelectiveFakeQbit(FakeQbit):
+    def __init__(self, files: list[TorrentFile]):
+        super().__init__({})
+        self.files = files
+        self.paused_add_calls = []
+        self.priority_calls = []
+        self.resumed = []
+
+    def add_torrent_paused(self, download_url: str, category: str) -> str:
+        self.paused_add_calls.append((download_url, category))
+        return "targeted-hash"
+
+    def get_torrent_files(self, torrent_hash: str) -> list[TorrentFile]:
+        return self.files
+
+    def set_file_priority(self, torrent_hash: str, file_indexes: list[int], priority: int) -> None:
+        self.priority_calls.append((torrent_hash, file_indexes, priority))
+
+    def resume_torrent(self, torrent_hash: str) -> None:
+        self.resumed.append(torrent_hash)
 
 
 def make_engine():
@@ -69,6 +102,172 @@ async def test_poll_once_marks_downloading(tmp_path):
         refreshed = session.exec(select(MediaJob)).first()
         assert refreshed.status == JobStatus.DOWNLOADING
         assert refreshed.progress == 0.5
+
+
+async def test_poll_once_scans_subscriptions_without_changing_job_polling(tmp_path, monkeypatch):
+    engine = make_engine()
+    calls = []
+
+    async def record_scan(session, indexer, *, qbit, settings, profile_provider, interval_seconds, now):
+        calls.append((session, indexer, qbit, settings, profile_provider, interval_seconds, now))
+
+    monkeypatch.setattr("skald.worker.scan_due_subscriptions", record_scan)
+    indexer = FakeIndexer()
+    with Session(engine) as session:
+        await poll_once(
+            session,
+            FakeQbit({}),
+            str(tmp_path / "movies"),
+            str(tmp_path / "tv"),
+            indexer=indexer,
+            subscription_check_interval_seconds=21_600,
+            settings=Settings(category_movie="movies"),
+        )
+
+    assert len(calls) == 1
+    assert calls[0][1] is indexer
+    assert isinstance(calls[0][2], FakeQbit)
+    assert calls[0][3].category_movie == "movies"
+    assert calls[0][4]() is not None
+    assert calls[0][5] == 21_600
+    assert callable(calls[0][6])
+    assert isinstance(calls[0][6](), datetime)
+    assert calls[0][6]().tzinfo is UTC
+
+
+async def test_poll_once_auto_grabs_scoped_tv_files_selectively(tmp_path):
+    engine = make_engine()
+    now = datetime.now(UTC)
+    with Session(engine) as session:
+        subscription = MediaSubscription(
+            tmdb_id=1, type=MediaType.TV, title="Show", auto_download=True, next_check_at=now
+        )
+        session.add(subscription)
+        session.commit()
+        session.add(TvSubscriptionScope(
+            subscription_id=subscription.id,
+            tmdb_series_id=1,
+            tmdb_season_id=10,
+            tmdb_episode_id=103,
+            season_number=1,
+            episode_number=3,
+        ))
+        session.commit()
+
+        class IndexedShow:
+            async def search(self, query):
+                return [ReleaseResult("Show.S01E03.1080p.WEB", "fake", 1, 5, 0, "magnet:?show")]
+
+        qbit = SelectiveFakeQbit([
+            TorrentFile(index=3, name="Show.S01E02.mkv"),
+            TorrentFile(index=8, name="Show.S01E03.mkv"),
+        ])
+        await poll_once(
+            session,
+            qbit,
+            str(tmp_path / "movies"),
+            str(tmp_path / "tv"),
+            indexer=IndexedShow(),
+            subscription_check_interval_seconds=60,
+            settings=Settings(category_tv="tv"),
+        )
+
+        job = session.exec(select(MediaJob)).one()
+        assert (job.qbit_hash, job.season, job.episode, job.episode_set) == (
+            "targeted-hash", 1, 3, "[3]"
+        )
+    assert qbit.paused_add_calls == [("magnet:?show", "tv")]
+    assert qbit.priority_calls == [
+        ("targeted-hash", [3, 8], 0),
+        ("targeted-hash", [8], 1),
+    ]
+    assert qbit.resumed == ["targeted-hash"]
+
+
+async def test_poll_once_processes_jobs_before_scanning_subscriptions(tmp_path, monkeypatch):
+    engine = make_engine()
+    events = []
+    with Session(engine) as session:
+        session.add(MediaJob(
+            type=MediaType.MOVIE, title="Queued", release_title="Queued.2026",
+            qbit_hash="hash", category="skald-movie", status=JobStatus.QUEUED,
+        ))
+        session.commit()
+
+    async def record_job(*args):
+        events.append("job")
+
+    async def record_scan(*args, **kwargs):
+        events.append("scan")
+
+    monkeypatch.setattr("skald.worker.process_job", record_job)
+    monkeypatch.setattr("skald.worker.scan_due_subscriptions", record_scan)
+    with Session(engine) as session:
+        await poll_once(
+            session, FakeQbit({}), str(tmp_path / "movies"), str(tmp_path / "tv"),
+            indexer=FakeIndexer(),
+        )
+
+    assert events == ["job", "scan"]
+
+
+async def test_subscription_schedules_each_scan_from_its_own_completion(tmp_path):
+    engine = make_engine()
+    started_at = datetime(2026, 9, 3, tzinfo=UTC)
+    completion_times = iter((
+        started_at + timedelta(seconds=10),
+        started_at + timedelta(seconds=30),
+    ))
+    current_time = started_at
+
+    def clock():
+        return current_time
+
+    class CompletingIndexer:
+        async def search(self, query):
+            nonlocal current_time
+            current_time = next(completion_times)
+            if query == "Second":
+                raise RuntimeError("second scan failed")
+            return []
+
+    with Session(engine) as session:
+        session.add_all([
+            MediaSubscription(tmdb_id=1, type=MediaType.MOVIE, title="First", next_check_at=started_at),
+            MediaSubscription(tmdb_id=2, type=MediaType.MOVIE, title="Second", next_check_at=started_at),
+        ])
+        session.commit()
+        await scan_due_subscriptions(
+            session, CompletingIndexer(), interval_seconds=21_600, now=clock
+        )
+
+        subscriptions = session.exec(select(MediaSubscription).order_by(MediaSubscription.id)).all()
+        assert [subscription.next_check_at.replace(tzinfo=UTC) for subscription in subscriptions] == [
+            started_at + timedelta(hours=6, seconds=10),
+            started_at + timedelta(hours=6, seconds=30),
+        ]
+        assert subscriptions[1].last_error == "second scan failed"
+
+
+async def test_subscription_scan_error_is_short_and_does_not_persist_indexer_secrets(tmp_path):
+    engine = make_engine()
+    now = datetime(2026, 9, 3, tzinfo=UTC)
+
+    class SecretFailingIndexer:
+        async def search(self, query):
+            raise RuntimeError(
+                "request to https://indexer.example/api?apikey=super-secret-key failed"
+            )
+
+    with Session(engine) as session:
+        session.add(MediaSubscription(
+            tmdb_id=1, type=MediaType.MOVIE, title="Broken", next_check_at=now
+        ))
+        session.commit()
+        await scan_due_subscriptions(session, SecretFailingIndexer(), interval_seconds=60, now=now)
+
+        subscription = session.exec(select(MediaSubscription)).one()
+        assert subscription.last_error == "RuntimeError: subscription scan failed"
 
 
 async def test_poll_once_does_not_overwrite_job_deleted_during_status_fetch(tmp_path):

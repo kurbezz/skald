@@ -15,6 +15,8 @@ from skald.episodes import (
 )
 from skald.lifecycle import try_job_lock
 from skald.models import FileLifecycle, JobStatus, MediaJob, MediaType, OrganizationMode, OrganizedFile
+from skald.indexer.base import ReleaseResult
+from skald.services.grab import MediaJobCreationError, create_media_job
 from skald.worker import DeletionOutcome, reconcile_deleting_job, request_job_deletion
 
 router = APIRouter()
@@ -155,39 +157,34 @@ async def grab(
 
     settings = request.app.state.settings
     qbit = request.app.state.qbit
-    category = settings.category_movie if media_type == "movie" else settings.category_tv
-
-    try:
-        torrent_hash = qbit.add_torrent(download_url, category)
-    except Exception as exc:  # noqa: BLE001 - surface any qBittorrent failure to the user
-        return templates.TemplateResponse(
-            request,
-            "error.html",
-            {
-                "title": "Failed to add torrent",
-                "detail": str(exc),
-                "hint": "Check QBIT_HOST/QBIT_USER/QBIT_PASS.",
-                "back_url": "/search",
-                "back_label": "Back to search",
-            },
-            status_code=502,
-        )
 
     with get_session(request.app.state.engine) as session:
-        job = MediaJob(
-            type=MediaType(media_type),
-            title=title,
-            year=year,
-            season=season,
-            episode=episode,
-            episode_set=persisted_episode_set,
-            release_title=release_title,
-            qbit_hash=torrent_hash,
-            category=category,
-            status=JobStatus.QUEUED,
-        )
-        session.add(job)
-        session.commit()
+        try:
+            create_media_job(
+                session,
+                qbit,
+                ReleaseResult(release_title, "manual", 0, 0, 0, download_url),
+                media_type=MediaType(media_type),
+                title=title,
+                year=year,
+                season=season,
+                episode=episode,
+                episode_set=persisted_episode_set,
+                settings=settings,
+            )
+        except MediaJobCreationError as exc:
+            return templates.TemplateResponse(
+                request,
+                "error.html",
+                {
+                    "title": "Failed to add torrent",
+                    "detail": str(exc),
+                    "hint": "Check QBIT_HOST/QBIT_USER/QBIT_PASS.",
+                    "back_url": "/search",
+                    "back_label": "Back to search",
+                },
+                status_code=502,
+            )
 
     return RedirectResponse(url="/jobs", status_code=303)
 
