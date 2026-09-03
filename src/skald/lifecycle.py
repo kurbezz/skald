@@ -15,8 +15,8 @@ class FileIdentity:
 
 
 def file_identity(path: Path) -> FileIdentity:
-    stat = path.stat()
-    return FileIdentity(device=stat.st_dev, inode=stat.st_ino)
+    result = path.lstat()
+    return FileIdentity(device=result.st_dev, inode=result.st_ino)
 
 
 def identity_matches(path: Path, identity: FileIdentity) -> bool:

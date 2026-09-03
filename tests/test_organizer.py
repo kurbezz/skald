@@ -5,16 +5,17 @@ import pytest
 
 from skald.organizer import (
     CleanupOutcome,
+    FileOperationError,
     TvPackError,
     build_tv_pack_targets,
     cleanup_owned_file,
     file_identity,
     find_video_files,
     link_file,
-    link_tv_pack,
     movie_target_path,
     remove_organized_file,
     publish_staged_file,
+    prune_empty_staging_directory,
     stage_file,
     staging_path_for,
     tv_target_path,
@@ -135,111 +136,6 @@ def test_build_tv_pack_targets_rejects_three_digit_episode_marker(tmp_path):
         build_tv_pack_targets(str(tmp_path / "tv"), "Show", [source])
 
 
-def test_link_tv_pack_rolls_back_created_targets_on_link_failure(tmp_path, monkeypatch):
-    sources = [tmp_path / f"Show.S01E{episode:02d}.mkv" for episode in range(1, 3)]
-    targets = [tmp_path / "tv" / source.name for source in sources]
-    for source in sources:
-        source.write_text("data")
-    calls = 0
-
-    def fake_link_file(source, target):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("disk full")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(source.read_text())
-
-    monkeypatch.setattr("skald.organizer.link_file", fake_link_file)
-
-    with pytest.raises(TvPackError, match="disk full"):
-        link_tv_pack(list(zip(sources, targets)))
-
-    assert not targets[0].exists()
-
-
-def test_link_tv_pack_cleans_the_current_partially_created_target(tmp_path, monkeypatch):
-    sources = [tmp_path / f"Show.S01E{episode:02d}.mkv" for episode in range(1, 3)]
-    targets = [tmp_path / "tv" / source.name for source in sources]
-    for source in sources:
-        source.write_text("data")
-    original_remove = remove_organized_file
-
-    def fail_after_creating_target(source, target):
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(source.read_text())
-        if target == targets[1]:
-            error = OSError("disk full")
-            error.attempt_owned = True
-            raise error
-
-    def fail_current_target_cleanup(target):
-        if target == targets[1]:
-            raise OSError("cleanup denied")
-        original_remove(target)
-
-    monkeypatch.setattr("skald.organizer.link_file", fail_after_creating_target)
-    monkeypatch.setattr("skald.organizer.remove_organized_file", fail_current_target_cleanup)
-
-    with pytest.raises(TvPackError, match="disk full.*cleanup denied"):
-        link_tv_pack(list(zip(sources, targets)))
-
-    assert not targets[0].exists()
-    assert targets[1].exists()
-
-
-def test_link_tv_pack_does_not_clean_a_target_owned_by_a_racing_writer(tmp_path, monkeypatch):
-    source = tmp_path / "Show.S01E01.mkv"
-    target = tmp_path / "tv" / "Show.S01E01.mkv"
-    source.write_text("data")
-
-    def race_to_create_target(source, target):
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("racing writer")
-        error = FileExistsError(f"Target already exists: {target}")
-        error.attempt_owned = False
-        error.explicitly_unowned = True
-        raise error
-
-    monkeypatch.setattr("skald.organizer.link_file", race_to_create_target)
-
-    with pytest.raises(TvPackError, match="Target already exists") as raised:
-        link_tv_pack([(source, target)])
-
-    assert target.read_text() == "racing writer"
-    assert raised.value.attempt_owned_paths == ()
-    assert raised.value.explicitly_unowned_paths == (target,)
-
-
-def test_link_tv_pack_registers_a_cleaned_partial_target_as_attempt_owned(tmp_path, monkeypatch):
-    sources = [tmp_path / f"Show.S01E{episode:02d}.mkv" for episode in range(1, 3)]
-    targets = [tmp_path / "tv" / source.name for source in sources]
-    for source in sources:
-        source.write_text("data")
-    cleanup_calls = []
-
-    def fail_after_link_file_cleans_its_partial_target(source, target):
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(source.read_text())
-        if target == targets[1]:
-            target.unlink()
-            error = OSError("disk full")
-            error.attempt_owned = True
-            raise error
-
-    def record_cleanup(target):
-        cleanup_calls.append(target)
-        remove_organized_file(target)
-
-    monkeypatch.setattr("skald.organizer.link_file", fail_after_link_file_cleans_its_partial_target)
-    monkeypatch.setattr("skald.organizer.remove_organized_file", record_cleanup)
-
-    with pytest.raises(TvPackError, match="disk full"):
-        link_tv_pack(list(zip(sources, targets)))
-
-    assert cleanup_calls == [targets[1], targets[0]]
-
-
 def test_staging_keeps_partial_output_private_and_captures_identity(tmp_path):
     source = tmp_path / "downloads" / "Show.S01E01.mkv"
     target = tmp_path / "library" / "Show" / "Season 01" / "Show - S01E01.mkv"
@@ -253,6 +149,58 @@ def test_staging_keeps_partial_output_private_and_captures_identity(tmp_path):
     assert staged.identity == file_identity(staging_path)
     assert staged.outcome.attempt_owned_paths == (staging_path,)
     assert not target.exists()
+
+
+def test_staging_fsyncs_a_new_private_parent_before_creating_the_file(tmp_path, monkeypatch):
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "library" / "Show.mkv"
+    source.write_text("episode")
+    staging_path = staging_path_for(target, "operation-token")
+    fsynced_directories = []
+
+    monkeypatch.setattr(
+        "skald.organizer._fsync_directory", lambda directory: fsynced_directories.append(directory)
+    )
+
+    stage_file(source, staging_path)
+
+    assert fsynced_directories[:2] == [staging_path.parent, staging_path.parent]
+
+
+def test_staging_preexisting_dangling_symlink_is_a_structured_unowned_failure(tmp_path):
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "library" / "Show.mkv"
+    source.write_text("episode")
+    staging_path = staging_path_for(target, "operation-token")
+    staging_path.parent.mkdir(parents=True)
+    staging_path.symlink_to(tmp_path / "missing-target")
+
+    with pytest.raises(FileOperationError) as raised:
+        stage_file(source, staging_path)
+
+    assert raised.value.write_error.errno == errno.EEXIST
+    assert raised.value.outcome.explicitly_unowned_paths == (staging_path,)
+
+
+def test_staging_parent_creation_failure_is_structured(tmp_path, monkeypatch):
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "library" / "Show.mkv"
+    source.write_text("episode")
+    staging_path = staging_path_for(target, "operation-token")
+    original_mkdir = Path.mkdir
+
+    def deny_staging_parent(path, *args, **kwargs):
+        if path == staging_path.parent:
+            raise PermissionError(errno.EACCES, "permission denied", str(path))
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", deny_staging_parent)
+
+    with pytest.raises(FileOperationError) as raised:
+        stage_file(source, staging_path)
+
+    assert raised.value.write_error.errno == errno.EACCES
+    assert str(staging_path.parent) in str(raised.value.write_error)
 
 
 def test_staging_uses_copy_only_after_exdev_link_failure(tmp_path, monkeypatch):
@@ -278,6 +226,32 @@ def test_staging_uses_copy_only_after_exdev_link_failure(tmp_path, monkeypatch):
     assert copy_calls == 1
     assert staging_path.read_text() == "episode"
     assert not target.exists()
+
+
+def test_staging_copy_eexist_is_a_structured_unowned_failure(tmp_path, monkeypatch):
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "library" / "Show.mkv"
+    source.write_text("episode")
+    staging_path = staging_path_for(target, "operation-token")
+
+    def force_exdev(source, target):
+        raise OSError(errno.EXDEV, "cross-device link")
+
+    original_open = __import__("os").open
+
+    def race_open(path, flags, mode=0o777):
+        if flags & __import__("os").O_WRONLY:
+            raise FileExistsError(errno.EEXIST, "staging path raced", str(path))
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr("skald.organizer.os.link", force_exdev)
+    monkeypatch.setattr("skald.organizer.os.open", race_open)
+
+    with pytest.raises(FileOperationError) as raised:
+        stage_file(source, staging_path)
+
+    assert raised.value.write_error.errno == errno.EEXIST
+    assert raised.value.outcome.explicitly_unowned_paths == (staging_path,)
 
 
 def test_staging_partial_copy_is_cleaned_without_public_output(tmp_path, monkeypatch):
@@ -341,6 +315,33 @@ def test_publication_records_identity_and_removes_private_staging_file(tmp_path)
     assert not staging_path.exists()
 
 
+def test_publication_prunes_only_its_empty_staging_token_directory(tmp_path):
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "library" / "Show.mkv"
+    source.write_text("episode")
+    staging_path = staging_path_for(target, "operation-token")
+    sibling = staging_path.parent.parent / "other-token" / "other.part"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_text("other attempt")
+    staged = stage_file(source, staging_path)
+
+    publish_staged_file(staged, target)
+
+    assert not staging_path.parent.exists()
+    assert staging_path.parent.parent.exists()
+    assert sibling.parent.exists()
+    assert sibling.exists()
+
+
+def test_prune_empty_staging_directory_ignores_non_staging_paths(tmp_path):
+    path = tmp_path / "ordinary" / "file.part"
+    path.parent.mkdir(parents=True)
+
+    prune_empty_staging_directory(path)
+
+    assert path.parent.exists()
+
+
 def test_staging_and_publication_fsync_parent_directories(tmp_path, monkeypatch):
     source = tmp_path / "source.mkv"
     target = tmp_path / "library" / "Show.mkv"
@@ -356,7 +357,58 @@ def test_staging_and_publication_fsync_parent_directories(tmp_path, monkeypatch)
     staged = stage_file(source, staging_path)
     publish_staged_file(staged, target)
 
-    assert fsynced_directories == [staging_path.parent, target.parent, staging_path.parent]
+    assert fsynced_directories == [
+        staging_path.parent,
+        staging_path.parent,
+        target.parent,
+        staging_path.parent,
+    ]
+
+
+def test_publication_fsync_failure_cleans_the_identity_owned_public_file(tmp_path, monkeypatch):
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "library" / "Show.mkv"
+    source.write_text("episode")
+    staged = stage_file(source, staging_path_for(target, "operation-token"))
+
+    def fail_target_fsync(path):
+        if path == target:
+            raise OSError(errno.EIO, "fsync failed", str(path))
+
+    monkeypatch.setattr("skald.organizer._fsync_path", fail_target_fsync)
+
+    with pytest.raises(FileOperationError) as raised:
+        publish_staged_file(staged, target)
+
+    assert raised.value.write_error.errno == errno.EIO
+    assert not target.exists()
+
+
+def test_stage_failure_reports_cleanup_error_without_masking_write_error(tmp_path, monkeypatch):
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "library" / "Show.mkv"
+    source.write_text("episode")
+    staging_path = staging_path_for(target, "operation-token")
+
+    def force_exdev(source, target):
+        raise OSError(errno.EXDEV, "cross-device link")
+
+    def write_then_fail(source_file, target_file):
+        target_file.write(b"partial")
+        raise OSError(errno.ENOSPC, "disk full")
+
+    monkeypatch.setattr("skald.organizer.os.link", force_exdev)
+    monkeypatch.setattr("skald.organizer.shutil.copyfileobj", write_then_fail)
+    monkeypatch.setattr(
+        "skald.organizer.cleanup_owned_file",
+        lambda path, identity: CleanupOutcome(removed=False, foreign=False, error="cleanup denied"),
+    )
+
+    with pytest.raises(FileOperationError, match="disk full.*cleanup denied") as raised:
+        stage_file(source, staging_path)
+
+    assert raised.value.write_error.errno == errno.ENOSPC
+    assert raised.value.outcome.cleanup_errors == ("cleanup denied",)
 
 
 def test_publication_reports_foreign_staging_cleanup_outcome(tmp_path, monkeypatch):
@@ -487,6 +539,34 @@ def test_identity_checked_cleanup_preserves_replaced_file(tmp_path):
     assert cleanup.foreign
     assert not cleanup.removed
     assert path.read_text() == "foreign replacement"
+
+
+def test_file_identity_uses_lstat_for_symlinks(tmp_path):
+    target = tmp_path / "target.mkv"
+    link = tmp_path / "link.mkv"
+    target.write_text("data")
+    link.symlink_to(target)
+
+    assert file_identity(link) != file_identity(target)
+
+
+def test_cleanup_identity_error_is_reported_as_a_structured_outcome(tmp_path, monkeypatch):
+    path = tmp_path / "library" / "Show.mkv"
+    path.parent.mkdir()
+    path.write_text("data")
+    identity = file_identity(path)
+
+    def deny_identity(path):
+        raise PermissionError(errno.EACCES, "permission denied", str(path))
+
+    monkeypatch.setattr("skald.organizer.file_identity", deny_identity)
+
+    cleanup = cleanup_owned_file(path, identity)
+
+    assert not cleanup.removed
+    assert not cleanup.foreign
+    assert cleanup.error is not None
+    assert "permission denied" in cleanup.error
 
 
 def test_find_video_files_in_directory(tmp_path):

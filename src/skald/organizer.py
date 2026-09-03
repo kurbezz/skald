@@ -150,35 +150,6 @@ def build_tv_pack_targets(
     return mappings
 
 
-def link_tv_pack(mappings: list[tuple[Path, Path]]) -> list[Path]:
-    created = []
-    for source, target in mappings:
-        try:
-            result = link_file(source, target)
-            if getattr(result, "attempt_owned", True):
-                created.append(target)
-        except OSError as exc:
-            current_target_owned = getattr(exc, "attempt_owned", False)
-            current_target_unowned = getattr(exc, "explicitly_unowned", False)
-            if current_target_owned:
-                created.append(target)
-            cleanup_errors = []
-            for created_target in reversed(created):
-                try:
-                    remove_organized_file(created_target)
-                except OSError as cleanup_exc:
-                    cleanup_errors.append(str(cleanup_exc))
-            detail = f"Failed to organize TV pack: {exc}"
-            if cleanup_errors:
-                detail += f"; cleanup failed: {'; '.join(cleanup_errors)}"
-            raise TvPackError(
-                detail,
-                attempt_owned_paths=tuple(created),
-                explicitly_unowned_paths=(target,) if current_target_unowned else (),
-            ) from exc
-    return created
-
-
 def staging_path_for(target: Path, operation_token: str) -> Path:
     """Return a private staging path on the target filesystem."""
     return target.parent / ".skald-staging" / operation_token / f"{target.name}.part"
@@ -195,9 +166,11 @@ def _fsync_directory(directory: Path) -> None:
 def cleanup_owned_file(path: Path, identity: FileIdentity) -> CleanupOutcome:
     """Remove a file only when it still has this attempt's identity."""
     try:
-        if not path.exists():
+        try:
+            current_identity = file_identity(path)
+        except FileNotFoundError:
             return CleanupOutcome(removed=True, foreign=False)
-        if not identity_matches(path, identity):
+        if current_identity != identity:
             return CleanupOutcome(removed=False, foreign=True)
         path.unlink()
         _fsync_directory(path.parent)
@@ -220,6 +193,7 @@ def _stage_failure(
     identity: FileIdentity | None,
     *,
     explicitly_unowned: bool = False,
+    attempt_owned_without_identity: bool = False,
 ) -> FileOperationError:
     cleanup_errors = ()
     owned_paths = ()
@@ -228,6 +202,8 @@ def _stage_failure(
         cleanup = cleanup_owned_file(staging_path, identity)
         if cleanup.error:
             cleanup_errors = (cleanup.error,)
+    elif attempt_owned_without_identity:
+        owned_paths = (staging_path,)
     return FileOperationError(
         write_error,
         FileOperationOutcome(
@@ -242,17 +218,35 @@ def _stage_failure(
 
 def stage_file(source: Path, staging_path: Path) -> StagedFile:
     """Create and fsync a private staged file without touching its public target."""
-    staging_path.parent.mkdir(parents=True, exist_ok=True)
-    if staging_path.exists():
-        raise _stage_failure(
-            FileExistsError(f"Staging path already exists: {staging_path}"),
-            staging_path,
-            None,
-            explicitly_unowned=True,
-        )
+    try:
+        try:
+            staging_path.parent.lstat()
+            parent_existed = True
+        except FileNotFoundError:
+            parent_existed = False
+        staging_path.parent.mkdir(parents=True, exist_ok=True)
+        if not parent_existed:
+            _fsync_directory(staging_path.parent)
+        try:
+            staging_path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise _stage_failure(
+                FileExistsError(errno.EEXIST, f"Staging path already exists: {staging_path}", str(staging_path)),
+                staging_path,
+                None,
+                explicitly_unowned=True,
+            )
+    except FileOperationError:
+        raise
+    except OSError as exc:
+        raise FileOperationError(exc, FileOperationOutcome()) from exc
 
+    attempt_created = False
     try:
         os.link(source, staging_path)
+        attempt_created = True
         identity = file_identity(staging_path)
         try:
             _fsync_path(staging_path)
@@ -276,6 +270,7 @@ def stage_file(source: Path, staging_path: Path) -> StagedFile:
                 staging_path,
                 None,
                 explicitly_unowned=exc.errno == errno.EEXIST,
+                attempt_owned_without_identity=attempt_created,
             ) from exc
 
     identity = None
@@ -331,13 +326,32 @@ def stage_file(source: Path, staging_path: Path) -> StagedFile:
 
 def publish_staged_file(staged: StagedFile, target: Path) -> PublishedFile:
     """Publish a staged file exclusively, without replacing a public target."""
-    if not identity_matches(staged.staging_path, staged.identity):
+    try:
+        staging_matches = identity_matches(staged.staging_path, staged.identity)
+    except OSError as exc:
+        raise FileOperationError(
+            exc,
+            FileOperationOutcome(
+                attempt_owned_paths=(staged.staging_path,),
+                attempt_owned_identities=(OwnedPathIdentity(staged.staging_path, staged.identity),),
+            ),
+        ) from exc
+    if not staging_matches:
         raise FileOperationError(
             OSError(f"Staging identity mismatch: {staged.staging_path}"),
             FileOperationOutcome(explicitly_unowned_paths=(staged.staging_path,)),
         )
 
-    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise FileOperationError(
+            exc,
+            FileOperationOutcome(
+                attempt_owned_paths=(staged.staging_path,),
+                attempt_owned_identities=(OwnedPathIdentity(staged.staging_path, staged.identity),),
+            ),
+        ) from exc
     try:
         os.link(staged.staging_path, target)
     except OSError as exc:
@@ -354,7 +368,16 @@ def publish_staged_file(staged: StagedFile, target: Path) -> PublishedFile:
     # invariant instead of trusting a fresh stat of the target path, which
     # could observe a different file if something replaced it immediately
     # after the link call.
-    observed_identity = file_identity(target)
+    try:
+        observed_identity = file_identity(target)
+    except OSError as exc:
+        raise FileOperationError(
+            exc,
+            FileOperationOutcome(
+                attempt_owned_paths=(staged.staging_path, target),
+                attempt_owned_identities=(OwnedPathIdentity(staged.staging_path, staged.identity),),
+            ),
+        ) from exc
     if observed_identity != staged.identity:
         raise FileOperationError(
             OSError(f"Published identity mismatch: {target}"),
@@ -383,6 +406,8 @@ def publish_staged_file(staged: StagedFile, target: Path) -> PublishedFile:
         ) from exc
 
     staging_cleanup = cleanup_owned_file(staged.staging_path, staged.identity)
+    if staging_cleanup.removed:
+        prune_empty_staging_directory(staged.staging_path)
     outcome = FileOperationOutcome(
         attempt_owned_paths=(target,)
         if staging_cleanup.removed or staging_cleanup.foreign else (staged.staging_path, target),
@@ -469,6 +494,17 @@ def prune_empty_parent(path: Path) -> None:
             parent.rmdir()
     except OSError:
         pass
+
+
+def prune_empty_staging_directory(path: Path) -> None:
+    """Best-effort removal of one empty private staging token directory."""
+    directory = path.parent
+    if directory.parent.name != ".skald-staging":
+        return
+    try:
+        directory.rmdir()
+    except OSError:
+        return
 
 
 def remove_organized_file(path: Path) -> None:

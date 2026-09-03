@@ -18,6 +18,7 @@ from skald.models import (
     OrganizedFile,
 )
 from skald.organizer import (
+    FileOperationError,
     TvPackError,
     build_tv_pack_targets,
     cleanup_owned_file,
@@ -25,6 +26,7 @@ from skald.organizer import (
     link_file,
     movie_target_path,
     prune_empty_parent,
+    prune_empty_staging_directory,
     publish_staged_file,
     remove_organized_file,
     stage_file,
@@ -288,6 +290,13 @@ def organize_tv_pack(
 
             try:
                 staged = stage_file(source, staging_path)
+            except FileOperationError as exc:
+                if not _persist_attempt_owned_staging_identities(
+                    session, job_id, token, reserved, exc.outcome
+                ):
+                    return
+                _mark_pack_job_needs_attention(session, job_id, token, str(exc))
+                return
             except OSError as exc:
                 _mark_pack_job_needs_attention(session, job_id, token, str(exc))
                 return
@@ -366,6 +375,46 @@ def _transition_organized_file(
         return True
     session.rollback()
     return False
+
+
+def _persist_attempt_owned_staging_identities(
+    session: Session,
+    job_id: int,
+    token: str,
+    reserved: list[tuple[OrganizedFile, Path, Path, Path]],
+    outcome,
+) -> bool:
+    """Durably retain identities from a failed staging attempt when its
+    reservation is still owned by this organizer.
+
+    A FileOperationError may be raised after a private path was created but
+    before stage_file could clean it. Persisting the identity lets recovery
+    prove ownership rather than leaving an untracked private artifact.
+    """
+    rows_by_staging_path = {str(staging_path): row for row, _, _, staging_path in reserved}
+    for owned in outcome.attempt_owned_identities:
+        row = rows_by_staging_path.get(str(owned.path))
+        if row is None:
+            continue
+        result = session.execute(
+            update(OrganizedFile)
+            .where(OrganizedFile.id == row.id)
+            .where(OrganizedFile.job_id == job_id)
+            .where(OrganizedFile.operation_token == token)
+            .where(OrganizedFile.lifecycle == FileLifecycle.RESERVED)
+            .where(
+                exists().where(MediaJob.id == job_id, MediaJob.operation_token == token)
+            )
+            .values(
+                staging_device=owned.identity.device,
+                staging_inode=owned.identity.inode,
+            )
+        )
+        if result.rowcount != 1:
+            session.rollback()
+            return False
+        session.commit()
+    return True
 
 
 def _finalize_tv_pack_job(
@@ -497,6 +546,12 @@ def _public_identity_for_cleanup(row: OrganizedFile) -> FileIdentity | None:
     return None
 
 
+def _staging_identity_for_cleanup(row: OrganizedFile) -> FileIdentity | None:
+    if row.staging_device is not None and row.staging_inode is not None:
+        return FileIdentity(row.staging_device, row.staging_inode)
+    return None
+
+
 def reconcile_deleting_job(
     session: Session, job: MediaJob, qbit: QbittorrentClient
 ) -> DeletionOutcome:
@@ -529,56 +584,48 @@ def reconcile_deleting_job(
             rows = session.exec(
                 select(OrganizedFile).where(OrganizedFile.job_id == job.id)
             ).all()
-            blocked_paths: list[str] = []
+            blocked_details: list[str] = []
             cleanup_errors: list[str] = []
             for row in rows:
                 if row.lifecycle == FileLifecycle.LEGACY_UNVERIFIED:
-                    blocked_paths.append(row.path)
+                    blocked_details.append(f"ownership conflict for: {row.path}")
                     continue
                 if row.operation_token != token:
-                    blocked_paths.append(row.path)
+                    blocked_details.append(f"ownership conflict for: {row.path}")
                     continue
 
                 public_identity = _public_identity_for_cleanup(row)
-                if public_identity is None:
-                    # Never reached a confirmed identity (still `reserved`):
-                    # nothing was ever published or staged; dropping the
-                    # reservation is safe without touching the filesystem.
-                    continue
-                outcome = cleanup_owned_file(Path(row.path), public_identity)
-                if outcome.foreign:
-                    blocked_paths.append(row.path)
-                    continue
-                if outcome.error:
-                    cleanup_errors.append(outcome.error)
-                    continue
-
-                # A row may also still have an un-cleaned private staging
-                # copy: a completed publish already unlinked it (this is a
-                # no-op), but an interrupted one, or the crash/fence-loss
-                # window above, can leave it behind.
-                if (
-                    row.staging_path
-                    and row.staging_device is not None
-                    and row.staging_inode is not None
-                ):
-                    staging_outcome = cleanup_owned_file(
-                        Path(row.staging_path),
-                        FileIdentity(row.staging_device, row.staging_inode),
+                staging_identity = _staging_identity_for_cleanup(row)
+                public_outcome = (
+                    cleanup_owned_file(Path(row.path), public_identity)
+                    if public_identity is not None else None
+                )
+                staging_outcome = (
+                    cleanup_owned_file(Path(row.staging_path), staging_identity)
+                    if row.staging_path and staging_identity is not None else None
+                )
+                if staging_outcome and staging_outcome.removed:
+                    prune_empty_staging_directory(Path(row.staging_path))
+                # Both candidates must be checked before classifying an
+                # ownership conflict: a foreign public replacement must not
+                # strand an independently identity-owned private artifact.
+                if public_outcome and public_outcome.error:
+                    cleanup_errors.append(public_outcome.error)
+                if staging_outcome and staging_outcome.error:
+                    cleanup_errors.append(staging_outcome.error)
+                if public_outcome and public_outcome.foreign:
+                    blocked_details.append(
+                        f"ownership conflict while cleaning {row.path}; "
+                        f"staging path {row.staging_path} was also checked"
                     )
-                    if staging_outcome.foreign:
-                        blocked_paths.append(row.path)
-                        continue
-                    if staging_outcome.error:
-                        cleanup_errors.append(staging_outcome.error)
+                elif staging_outcome and staging_outcome.foreign:
+                    blocked_details.append(f"ownership conflict for: {row.path}")
 
-            if blocked_paths:
+            if blocked_details:
                 # A genuine ownership conflict (foreign identity, stale
                 # token, or an untrusted legacy row) requires operator
                 # reconciliation; it is never automatically retried.
-                detail_parts = [
-                    "ownership conflict for: " + "; ".join(sorted(set(blocked_paths)))
-                ]
+                detail_parts = sorted(set(blocked_details))
                 if cleanup_errors:
                     detail_parts.append("cleanup failed: " + "; ".join(cleanup_errors))
                 _mark_deleting_job_needs_attention(
@@ -605,8 +652,8 @@ def reconcile_deleting_job(
             # pending cleanup earlier in this same job.
             for row in rows:
                 prune_empty_parent(Path(row.path))
-                if row.staging_path:
-                    prune_empty_parent(Path(row.staging_path))
+                if row.staging_path and _staging_identity_for_cleanup(row) is not None:
+                    prune_empty_staging_directory(Path(row.staging_path))
         else:
             # Scalar deletion never uses pack identity fields; it only
             # removes the metadata-derived `library_path`.
@@ -618,7 +665,6 @@ def reconcile_deleting_job(
                     session, job, f"Delete pending: failed to remove library file: {exc}"
                 )
                 return DeletionOutcome.LIBRARY_FAILURE
-
         try:
             qbit.delete_torrent(job.qbit_hash, delete_files=True)
         except LookupError:
@@ -629,8 +675,20 @@ def reconcile_deleting_job(
             )
             return DeletionOutcome.QBIT_FAILURE
 
-        for row in rows:
-            session.delete(row)
+        if job.organization_mode == OrganizationMode.PACK:
+            for row in rows:
+                session.delete(row)
+            session.flush()
+        else:
+            # Unexpected child metadata must be removed with the scalar job
+            # to satisfy the OrganizedFile.job_id foreign key. Its paths and
+            # identities are intentionally never used for scalar cleanup.
+            scalar_rows = session.exec(
+                select(OrganizedFile).where(OrganizedFile.job_id == job.id)
+            ).all()
+            for row in scalar_rows:
+                session.delete(row)
+            session.flush()
         session.delete(job)
         try:
             session.commit()
@@ -715,54 +773,33 @@ def reconcile_organizing_job(session: Session, job: MediaJob) -> None:
         rows = session.exec(
             select(OrganizedFile).where(OrganizedFile.job_id == job.id)
         ).all()
-        blocked_paths: list[str] = []
+        blocked_details: list[str] = []
         cleanup_errors: list[str] = []
         for row in rows:
             if row.lifecycle == FileLifecycle.LEGACY_UNVERIFIED:
-                blocked_paths.append(row.path)
+                blocked_details.append(f"ownership conflict for: {row.path}")
                 continue
             if row.operation_token != token:
-                blocked_paths.append(row.path)
+                blocked_details.append(f"ownership conflict for: {row.path}")
                 continue
+
+            public_identity: FileIdentity | None = None
+            missing_public_identity = False
             if row.lifecycle == FileLifecycle.RESERVED:
-                # No confirmed identity was ever captured; nothing on disk
-                # can be safely attributed to this row. Just release the
-                # reservation.
-                continue
-            if row.lifecycle == FileLifecycle.PUBLISHED:
+                # A normal reservation has no filesystem footprint. A
+                # failed stage can, however, durably attach an independently
+                # identity-qualified private artifact to this same lifecycle.
+                pass
+            elif row.lifecycle == FileLifecycle.PUBLISHED:
                 if row.published_device is None or row.published_inode is None:
-                    blocked_paths.append(row.path)
-                    continue
-                outcome = cleanup_owned_file(
-                    Path(row.path),
-                    FileIdentity(row.published_device, row.published_inode),
-                )
-                if outcome.foreign:
-                    blocked_paths.append(row.path)
-                    continue
-                if outcome.error:
-                    cleanup_errors.append(outcome.error)
-                    continue
-                if (
-                    row.staging_path
-                    and row.staging_device is not None
-                    and row.staging_inode is not None
-                ):
-                    staging_outcome = cleanup_owned_file(
-                        Path(row.staging_path),
-                        FileIdentity(row.staging_device, row.staging_inode),
-                    )
-                    if staging_outcome.foreign:
-                        blocked_paths.append(row.path)
-                        continue
-                    if staging_outcome.error:
-                        cleanup_errors.append(staging_outcome.error)
-                continue
-            if row.lifecycle == FileLifecycle.STAGED:
+                    missing_public_identity = True
+                else:
+                    public_identity = FileIdentity(row.published_device, row.published_inode)
+            elif row.lifecycle == FileLifecycle.STAGED:
                 if row.staging_device is None or row.staging_inode is None:
-                    blocked_paths.append(row.path)
-                    continue
-                staging_identity = FileIdentity(row.staging_device, row.staging_inode)
+                    missing_public_identity = True
+                else:
+                    public_identity = FileIdentity(row.staging_device, row.staging_inode)
                 # Fence-loss window: publish_staged_file may have already
                 # hardlinked row.path (and unlinked staging) before the
                 # STAGED -> PUBLISHED database write committed. By the
@@ -771,31 +808,43 @@ def reconcile_organizing_job(session: Session, job: MediaJob) -> None:
                 # staging identity - checking it here is what proves
                 # ownership in that window (see _public_identity_for_cleanup
                 # for the full explanation).
-                outcome = cleanup_owned_file(Path(row.path), staging_identity)
-                if outcome.foreign:
-                    blocked_paths.append(row.path)
-                    continue
-                if outcome.error:
-                    cleanup_errors.append(outcome.error)
-                    continue
-                if row.staging_path:
-                    staging_outcome = cleanup_owned_file(Path(row.staging_path), staging_identity)
-                    if staging_outcome.foreign:
-                        blocked_paths.append(row.path)
-                        continue
-                    if staging_outcome.error:
-                        cleanup_errors.append(staging_outcome.error)
+            else:
+                # Unknown/unexpected lifecycle value: stop automatic mutation
+                # rather than guess.
+                blocked_details.append(f"ownership conflict for: {row.path}")
                 continue
-            # Unknown/unexpected lifecycle value: stop automatic mutation
-            # rather than guess.
-            blocked_paths.append(row.path)
 
-        if blocked_paths:
+            staging_identity = _staging_identity_for_cleanup(row)
+            public_outcome = (
+                cleanup_owned_file(Path(row.path), public_identity)
+                if public_identity is not None else None
+            )
+            staging_outcome = (
+                cleanup_owned_file(Path(row.staging_path), staging_identity)
+                if row.staging_path and staging_identity is not None else None
+            )
+            if staging_outcome and staging_outcome.removed:
+                prune_empty_staging_directory(Path(row.staging_path))
+            # Check every identity-qualified public/private candidate before
+            # deciding whether a foreign replacement needs attention.
+            if public_outcome and public_outcome.error:
+                cleanup_errors.append(public_outcome.error)
+            if staging_outcome and staging_outcome.error:
+                cleanup_errors.append(staging_outcome.error)
+            if missing_public_identity:
+                blocked_details.append(f"ownership conflict for: {row.path}")
+            elif public_outcome and public_outcome.foreign:
+                blocked_details.append(
+                    f"ownership conflict while cleaning {row.path}; "
+                    f"staging path {row.staging_path} was also checked"
+                )
+            elif staging_outcome and staging_outcome.foreign:
+                blocked_details.append(f"ownership conflict for: {row.path}")
+
+        if blocked_details:
             # A genuine ownership conflict requires operator reconciliation;
             # it is never automatically retried.
-            detail_parts = [
-                "ownership conflict for: " + "; ".join(sorted(set(blocked_paths)))
-            ]
+            detail_parts = sorted(set(blocked_details))
             if cleanup_errors:
                 detail_parts.append("cleanup failed: " + "; ".join(cleanup_errors))
             result = session.execute(
@@ -842,8 +891,8 @@ def reconcile_organizing_job(session: Session, job: MediaJob) -> None:
         # pack doesn't leave an empty Show/Season 01/ tree behind.
         for row in rows:
             prune_empty_parent(Path(row.path))
-            if row.staging_path:
-                prune_empty_parent(Path(row.staging_path))
+            if row.staging_path and _staging_identity_for_cleanup(row) is not None:
+                prune_empty_staging_directory(Path(row.staging_path))
 
         for row in rows:
             session.delete(row)

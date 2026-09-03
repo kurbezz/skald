@@ -1290,17 +1290,38 @@ def test_fenced_delete_route_does_nothing_while_job_lock_is_held_elsewhere(tmp_p
     monkeypatch.setenv("DB_PATH", str(tmp_path / "delete-lock-contention.db"))
     app = create_app()
 
+    class RecordingQbit:
+        def __init__(self):
+            self.deleted_hashes = []
+
+        def delete_torrent(self, torrent_hash, delete_files=True):
+            self.deleted_hashes.append(torrent_hash)
+
     with TestClient(app) as client:
-        app.state.qbit = FakeQbit()
+        fake_qbit = RecordingQbit()
+        app.state.qbit = fake_qbit
         with Session(app.state.engine) as session:
             job = MediaJob(
-                type=MediaType.MOVIE, title="Movie", year=2020,
-                release_title="Movie.2020", qbit_hash="hash", category="skald-movie",
+                type=MediaType.TV, title="Show", season=1, episode=1,
+                release_title="Show.S01", qbit_hash="hash", category="skald-tv",
                 status=JobStatus.ORGANIZED,
+                organization_mode=OrganizationMode.PACK,
+                operation_token="organize-token",
             )
             session.add(job)
             session.commit()
+            ledger = OrganizedFile(
+                job_id=job.id,
+                path="/library/Show - S01E01.mkv",
+                lifecycle=FileLifecycle.PUBLISHED,
+                operation_token="organize-token",
+                published_device=1,
+                published_inode=1,
+            )
+            session.add(ledger)
+            session.commit()
             job_id = job.id
+            ledger_id = ledger.id
 
         from skald.lifecycle import try_job_lock
 
@@ -1308,11 +1329,14 @@ def test_fenced_delete_route_does_nothing_while_job_lock_is_held_elsewhere(tmp_p
             assert held
             response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
 
-        assert response.status_code == 303
+        assert response.status_code == 409
+        assert "already being updated" in response.text
+        assert fake_qbit.deleted_hashes == []
         with Session(app.state.engine) as session:
             job = session.get(MediaJob, job_id)
-            # No commit happened while the lock was held elsewhere.
             assert job.status == JobStatus.ORGANIZED
+            assert job.operation_token == "organize-token"
+            assert session.get(OrganizedFile, ledger_id).lifecycle == FileLifecycle.PUBLISHED
 
 
 def test_fenced_retry_route_does_nothing_while_job_lock_is_held_elsewhere(tmp_path, monkeypatch):
@@ -1322,23 +1346,151 @@ def test_fenced_retry_route_does_nothing_while_job_lock_is_held_elsewhere(tmp_pa
     with TestClient(app) as client:
         with Session(app.state.engine) as session:
             job = MediaJob(
-                type=MediaType.MOVIE, title="Movie", year=2020,
-                release_title="Movie.2020", qbit_hash="hash", category="skald-movie",
+                type=MediaType.TV, title="Show", season=1, episode=1,
+                release_title="Show.S01", qbit_hash="hash", category="skald-tv",
                 status=JobStatus.NEEDS_ATTENTION,
+                organization_mode=OrganizationMode.PACK,
+                operation_token="organize-token",
             )
             session.add(job)
             session.commit()
+            ledger = OrganizedFile(
+                job_id=job.id,
+                path="/library/Show - S01E01.mkv",
+                lifecycle=FileLifecycle.PUBLISHED,
+                operation_token="organize-token",
+                published_device=1,
+                published_inode=1,
+            )
+            session.add(ledger)
+            session.commit()
             job_id = job.id
+            ledger_id = ledger.id
 
         from skald.lifecycle import try_job_lock
 
         with try_job_lock(job_id) as held:
             assert held
             response = client.post(
-                f"/jobs/{job_id}/retry", data={"title": "Movie"}, follow_redirects=False
+                f"/jobs/{job_id}/retry",
+                data={"title": "Show", "season": 1, "episode": 1},
+                follow_redirects=False,
             )
 
-        assert response.status_code == 303
+        assert response.status_code == 409
+        assert "already being updated" in response.text
         with Session(app.state.engine) as session:
             job = session.get(MediaJob, job_id)
             assert job.status == JobStatus.NEEDS_ATTENTION
+            assert job.operation_token == "organize-token"
+            assert session.get(OrganizedFile, ledger_id).lifecycle == FileLifecycle.PUBLISHED
+
+
+def test_retry_pack_to_scalar_clears_only_nonlegacy_ledger_rows_atomically(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "retry-pack-to-scalar.db"))
+    app = create_app()
+
+    with TestClient(app) as client:
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.TV, title="Show", season=1, episode=1,
+                release_title="Show.S01", qbit_hash="hash", category="skald-tv",
+                status=JobStatus.NEEDS_ATTENTION,
+                organization_mode=OrganizationMode.PACK,
+                operation_token="organize-token",
+            )
+            other_job = MediaJob(
+                type=MediaType.TV, title="Other", season=1, episode=1,
+                release_title="Other.S01", qbit_hash="other-hash", category="skald-tv",
+                status=JobStatus.NEEDS_ATTENTION,
+                organization_mode=OrganizationMode.PACK,
+                operation_token="other-token",
+            )
+            session.add_all([job, other_job])
+            session.commit()
+            normal_row = OrganizedFile(
+                job_id=job.id, path="/library/Show - S01E01.mkv",
+                lifecycle=FileLifecycle.PUBLISHED, operation_token="organize-token",
+            )
+            legacy_row = OrganizedFile(
+                job_id=job.id, path="/library/Show - S01E02.mkv",
+                lifecycle=FileLifecycle.LEGACY_UNVERIFIED,
+            )
+            other_row = OrganizedFile(
+                job_id=other_job.id, path="/library/Other - S01E01.mkv",
+                lifecycle=FileLifecycle.PUBLISHED, operation_token="other-token",
+            )
+            session.add_all([normal_row, legacy_row, other_row])
+            session.commit()
+            job_id = job.id
+            normal_id = normal_row.id
+            legacy_id = legacy_row.id
+            other_id = other_row.id
+
+        response = client.post(
+            f"/jobs/{job_id}/retry",
+            data={"title": "Show", "season": 1, "episode": 1},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    with Session(app.state.engine) as session:
+        retried = session.get(MediaJob, job_id)
+        assert retried.organization_mode == OrganizationMode.SCALAR
+        assert retried.operation_token is None
+        assert retried.status == JobStatus.ORGANIZING
+        assert session.get(OrganizedFile, normal_id) is None
+        assert session.get(OrganizedFile, legacy_id) is not None
+        assert session.get(OrganizedFile, other_id) is not None
+
+
+def test_retry_pack_to_scalar_rolls_back_ledger_mode_and_token_on_commit_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "retry-pack-rollback.db"))
+    app = create_app()
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        with Session(app.state.engine) as session:
+            job = MediaJob(
+                type=MediaType.TV, title="Show", season=1, episode=1,
+                release_title="Show.S01", qbit_hash="hash", category="skald-tv",
+                status=JobStatus.NEEDS_ATTENTION,
+                organization_mode=OrganizationMode.PACK,
+                operation_token="organize-token",
+            )
+            session.add(job)
+            session.commit()
+            normal_row = OrganizedFile(
+                job_id=job.id, path="/library/Show - S01E01.mkv",
+                lifecycle=FileLifecycle.PUBLISHED, operation_token="organize-token",
+            )
+            legacy_row = OrganizedFile(
+                job_id=job.id, path="/library/Show - S01E02.mkv",
+                lifecycle=FileLifecycle.LEGACY_UNVERIFIED,
+            )
+            session.add_all([normal_row, legacy_row])
+            session.commit()
+            job_id = job.id
+            normal_id = normal_row.id
+            legacy_id = legacy_row.id
+
+        original_commit = Session.commit
+
+        def fail_retry_commit(session):
+            if session.get(MediaJob, job_id) is not None:
+                raise RuntimeError("commit failed")
+            return original_commit(session)
+
+        monkeypatch.setattr(Session, "commit", fail_retry_commit)
+        response = client.post(
+            f"/jobs/{job_id}/retry",
+            data={"title": "Show", "season": 1, "episode": 1},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 500
+    with Session(app.state.engine) as session:
+        job = session.get(MediaJob, job_id)
+        assert job.organization_mode == OrganizationMode.PACK
+        assert job.operation_token == "organize-token"
+        assert session.get(OrganizedFile, normal_id) is not None
+        assert session.get(OrganizedFile, legacy_id) is not None

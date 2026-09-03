@@ -68,7 +68,10 @@ class OrganizedFile(SQLModel, table=True):
     job_id: int = Field(foreign_key="mediajob.id", index=True)
     path: str = Field(sa_column_kwargs={"unique": True})
     operation_token: Optional[str] = None
-    lifecycle: FileLifecycle
+    lifecycle: FileLifecycle = Field(
+        default=FileLifecycle.LEGACY_UNVERIFIED,
+        sa_column_kwargs={"server_default": "LEGACY_UNVERIFIED"},
+    )
     staging_path: Optional[str] = None
     staging_device: Optional[int] = None
     staging_inode: Optional[int] = None

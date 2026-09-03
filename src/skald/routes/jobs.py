@@ -4,6 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import delete
 from sqlmodel import select
 
 from skald.db import get_session
@@ -13,7 +14,7 @@ from skald.episodes import (
     serialize_episode_set,
 )
 from skald.lifecycle import try_job_lock
-from skald.models import JobStatus, MediaJob, MediaType, OrganizedFile
+from skald.models import FileLifecycle, JobStatus, MediaJob, MediaType, OrganizationMode, OrganizedFile
 from skald.worker import DeletionOutcome, reconcile_deleting_job, request_job_deletion
 
 router = APIRouter()
@@ -207,6 +208,11 @@ def _error_page(request: Request, title: str, detail: str, status_code: int) -> 
 
 @router.post("/jobs/{job_id}/delete")
 async def delete_job(request: Request, job_id: int):
+    with try_job_lock(job_id) as acquired:
+        if not acquired:
+            return HTMLResponse(
+                "This job is already being updated; retry shortly.", status_code=409
+            )
     qbit = request.app.state.qbit
 
     with get_session(request.app.state.engine) as session:
@@ -341,35 +347,49 @@ async def retry_job(
     with get_session(request.app.state.engine) as session:
         with try_job_lock(job_id) as acquired:
             if not acquired:
-                return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+                return HTMLResponse(
+                    "This job is already being updated; retry shortly.", status_code=409
+                )
             job = session.get(MediaJob, job_id)
             if job is None:
                 return RedirectResponse(url="/jobs", status_code=303)
             if job.status == JobStatus.DELETING:
                 # Never destroy durable delete intent with a retry write.
                 return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
-            form = await request.form()
-            persisted_episode_set = validate_job_submission(
-                job.type,
-                title,
-                season,
-                episode,
-                episode_set,
-                "episode_set" in form,
-            )
-            job.title = title
-            job.year = year
-            job.season = season
-            job.episode = episode
-            job.episode_set = persisted_episode_set
-            has_residual_pack_ledger = (
-                job.type == MediaType.TV
-                and session.exec(
-                    select(OrganizedFile).where(OrganizedFile.job_id == job.id)
-                ).first() is not None
-            )
-            job.status = JobStatus.ORGANIZING if has_residual_pack_ledger else JobStatus.COMPLETED
-            job.error_message = None
-            session.add(job)
-            session.commit()
+            try:
+                form = await request.form()
+                persisted_episode_set = validate_job_submission(
+                    job.type,
+                    title,
+                    season,
+                    episode,
+                    episode_set,
+                    "episode_set" in form,
+                )
+                job.title = title
+                job.year = year
+                job.season = season
+                job.episode = episode
+                job.episode_set = persisted_episode_set
+                if job.organization_mode == OrganizationMode.PACK:
+                    session.execute(
+                        delete(OrganizedFile)
+                        .where(OrganizedFile.job_id == job.id)
+                        .where(OrganizedFile.lifecycle != FileLifecycle.LEGACY_UNVERIFIED)
+                    )
+                    job.operation_token = None
+                    job.organization_mode = OrganizationMode.SCALAR
+                has_residual_pack_ledger = (
+                    job.type == MediaType.TV
+                    and session.exec(
+                        select(OrganizedFile).where(OrganizedFile.job_id == job.id)
+                    ).first() is not None
+                )
+                job.status = JobStatus.ORGANIZING if has_residual_pack_ledger else JobStatus.COMPLETED
+                job.error_message = None
+                session.add(job)
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)

@@ -1,4 +1,6 @@
 import asyncio
+import errno
+from pathlib import Path
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -1508,6 +1510,157 @@ async def test_delete_identity_mismatch_and_legacy_row_are_retained_without_dele
         assert {row.path for row in rows} == {str(foreign), str(legacy_path)}
 
 
+async def test_deleting_foreign_public_conflict_cleans_owned_staging_and_reports_both_paths(tmp_path):
+    engine = make_engine()
+    public_path = tmp_path / "library" / "Show - S01E01.mkv"
+    staging_path = tmp_path / "library" / ".skald-staging" / "org-token" / "Show.part"
+    public_path.parent.mkdir(parents=True)
+    public_path.write_text("foreign public file")
+    staging_path.parent.mkdir(parents=True)
+    staging_path.write_text("owned private staging file")
+    from skald.lifecycle import file_identity
+    staging_identity = file_identity(staging_path)
+    with Session(engine) as session:
+        job = _make_pack_job(session)
+        row = OrganizedFile(
+            job_id=job.id,
+            path=str(public_path),
+            lifecycle=FileLifecycle.PUBLISHED,
+            operation_token="org-token",
+            published_device=999999,
+            published_inode=999999,
+            staging_path=str(staging_path),
+            staging_device=staging_identity.device,
+            staging_inode=staging_identity.inode,
+        )
+        session.add(row)
+        session.commit()
+        job_id = job.id
+        row_id = row.id
+
+    with Session(engine) as session:
+        job = request_job_deletion(session, job_id)
+        outcome = reconcile_deleting_job(session, job, FakeQbit({}))
+
+    assert outcome == DeletionOutcome.NEEDS_ATTENTION
+    assert public_path.exists()
+    assert not staging_path.exists()
+    assert not staging_path.parent.exists()
+    with Session(engine) as session:
+        job = session.get(MediaJob, job_id)
+        assert job.status == JobStatus.NEEDS_ATTENTION
+        assert str(public_path) in job.error_message
+        assert str(staging_path) in job.error_message
+        assert session.get(OrganizedFile, row_id) is not None
+
+
+async def test_organizing_foreign_public_conflict_cleans_owned_staging_and_reports_both_paths(tmp_path):
+    engine = make_engine()
+    public_path = tmp_path / "library" / "Show - S01E01.mkv"
+    staging_path = tmp_path / "library" / ".skald-staging" / "org-token" / "Show.part"
+    public_path.parent.mkdir(parents=True)
+    public_path.write_text("foreign public file")
+    staging_path.parent.mkdir(parents=True)
+    staging_path.write_text("owned private staging file")
+    from skald.lifecycle import file_identity
+    staging_identity = file_identity(staging_path)
+    with Session(engine) as session:
+        job = _make_pack_job(session, status=JobStatus.ORGANIZING)
+        row = OrganizedFile(
+            job_id=job.id,
+            path=str(public_path),
+            lifecycle=FileLifecycle.PUBLISHED,
+            operation_token="org-token",
+            published_device=999999,
+            published_inode=999999,
+            staging_path=str(staging_path),
+            staging_device=staging_identity.device,
+            staging_inode=staging_identity.inode,
+        )
+        session.add(row)
+        session.commit()
+        job_id = job.id
+        row_id = row.id
+
+    with Session(engine) as session:
+        reconcile_organizing_job(session, session.get(MediaJob, job_id))
+
+    assert public_path.exists()
+    assert not staging_path.exists()
+    assert not staging_path.parent.exists()
+    with Session(engine) as session:
+        job = session.get(MediaJob, job_id)
+        assert job.status == JobStatus.NEEDS_ATTENTION
+        assert str(public_path) in job.error_message
+        assert str(staging_path) in job.error_message
+        assert session.get(OrganizedFile, row_id) is not None
+
+
+async def test_staging_failure_persists_owned_identity_for_organizing_recovery(tmp_path, monkeypatch):
+    from skald.lifecycle import file_identity
+    from skald.organizer import FileOperationError, FileOperationOutcome, OwnedPathIdentity
+    from skald.worker import organize_tv_pack
+
+    engine = make_engine()
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    sources = [downloads / f"Show.S01E{episode:02d}.mkv" for episode in (1, 2)]
+    for source in sources:
+        source.write_text("episode")
+    with Session(engine) as session:
+        job = MediaJob(
+            type=MediaType.TV,
+            title="Show",
+            release_title="Show.S01",
+            qbit_hash="hash",
+            category="skald-tv",
+            status=JobStatus.COMPLETED,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+        def leave_owned_staging_file(source, staging_path):
+            staging_path.parent.mkdir(parents=True)
+            staging_path.write_text("partial")
+            identity = file_identity(staging_path)
+            raise FileOperationError(
+                OSError(errno.ENOSPC, "disk full", str(staging_path)),
+                FileOperationOutcome(
+                    attempt_owned_paths=(staging_path,),
+                    attempt_owned_identities=(OwnedPathIdentity(staging_path, identity),),
+                ),
+            )
+
+        monkeypatch.setattr("skald.worker.stage_file", leave_owned_staging_file)
+        organize_tv_pack(session, job, str(tmp_path / "tv"), sources)
+
+    with Session(engine) as session:
+        job = session.get(MediaJob, job_id)
+        assert job.status == JobStatus.NEEDS_ATTENTION
+        rows = session.exec(select(OrganizedFile).where(OrganizedFile.job_id == job_id)).all()
+        owned_row = next(row for row in rows if row.staging_device is not None)
+        staging_path = Path(owned_row.staging_path)
+        staging_identity = file_identity(staging_path)
+        assert (owned_row.staging_device, owned_row.staging_inode) == (
+            staging_identity.device,
+            staging_identity.inode,
+        )
+        job.status = JobStatus.ORGANIZING
+        session.add(job)
+        session.commit()
+
+    with Session(engine) as session:
+        reconcile_organizing_job(session, session.get(MediaJob, job_id))
+
+    assert not staging_path.exists()
+    assert not staging_path.parent.exists()
+    with Session(engine) as session:
+        job = session.get(MediaJob, job_id)
+        assert job.status == JobStatus.COMPLETED
+        assert session.exec(select(OrganizedFile).where(OrganizedFile.job_id == job_id)).all() == []
+
+
 async def test_deleting_recovery_qbittorrent_failure_after_local_cleanup_retains_ledger_for_retry(
     tmp_path,
 ):
@@ -1645,32 +1798,173 @@ async def test_scalar_delete_commits_deleting_intent_then_removes_library_path_t
         assert session.get(MediaJob, job_id) is None
 
 
-async def test_scalar_delete_does_not_use_pack_ledger_even_if_rows_exist(tmp_path):
+async def test_scalar_delete_removes_unexpected_child_metadata_without_using_its_path(tmp_path):
     """Design: pack deletion never falls back to `library_path`, and scalar
-    deletion does not use pack identity fields. A scalar job's deletion must
-    ignore any (unexpected) OrganizedFile rows and act on `library_path`
-    only.
+    deletion does not use pack identity fields. A scalar job's filesystem
+    deletion must act on `library_path` only, even if it has an unexpected
+    OrganizedFile child. The child metadata still must be removed before its
+    parent job can be deleted under the child FK.
     """
-    engine = make_engine()
-    library_file = tmp_path / "library" / "Movie.mkv"
-    library_file.parent.mkdir(parents=True)
-    library_file.write_text("data")
+    # get_engine enables SQLite foreign-key enforcement, unlike make_engine's
+    # raw in-memory connection.
+    engine = get_engine(str(tmp_path / "scalar-child-fk.db"))
+    SQLModel.metadata.create_all(engine)
+    scalar_path = tmp_path / "library" / "Movie.mkv"
+    unrelated_path = tmp_path / "library" / "Show - S01E01.mkv"
+    scalar_path.parent.mkdir(parents=True)
+    scalar_path.write_text("scalar data")
+    unrelated_path.write_text("unrelated data")
     with Session(engine) as session:
         job = MediaJob(
             type=MediaType.MOVIE, title="Movie", year=2020,
             release_title="Movie.2020", qbit_hash="hash", category="skald-movie",
-            status=JobStatus.ORGANIZED, library_path=str(library_file),
+            status=JobStatus.ORGANIZED, library_path=str(scalar_path),
         )
         session.add(job)
+        session.flush()
+        unrelated_identity = unrelated_path.stat()
+        ledger = OrganizedFile(
+            job_id=job.id,
+            path=str(unrelated_path),
+            operation_token="stale-pack-token",
+            lifecycle=FileLifecycle.PUBLISHED,
+            published_device=unrelated_identity.st_dev,
+            published_inode=unrelated_identity.st_ino,
+        )
+        session.add_all([job, ledger])
         session.commit()
         job_id = job.id
+        ledger_id = ledger.id
+
+    class FailingQbit:
+        def delete_torrent(self, torrent_hash, delete_files=True):
+            raise RuntimeError("qBittorrent unavailable")
 
     with Session(engine) as session:
         job = request_job_deletion(session, job_id)
-        outcome = reconcile_deleting_job(session, job, FakeQbit({}))
+        outcome = reconcile_deleting_job(session, job, FailingQbit())
+
+    assert outcome == DeletionOutcome.QBIT_FAILURE
+    assert not scalar_path.exists()
+    assert unrelated_path.exists()
+    with Session(engine) as session:
+        job = session.get(MediaJob, job_id)
+        assert job.status == JobStatus.DELETING
+        assert session.get(OrganizedFile, ledger_id) is not None
+
+    class RecordingQbit:
+        def __init__(self):
+            self.deleted_hashes = []
+
+        def delete_torrent(self, torrent_hash, delete_files=True):
+            self.deleted_hashes.append(torrent_hash)
+
+    fake_qbit = RecordingQbit()
+
+    with Session(engine) as session:
+        job = session.get(MediaJob, job_id)
+        outcome = reconcile_deleting_job(session, job, fake_qbit)
 
     assert outcome == DeletionOutcome.DELETED
-    assert not library_file.exists()
+    assert not scalar_path.exists()
+    assert unrelated_path.exists()
+    with Session(engine) as session:
+        assert session.get(MediaJob, job_id) is None
+        assert session.get(OrganizedFile, ledger_id) is None
+    assert fake_qbit.deleted_hashes == ["hash"]
+
+
+async def test_pack_delete_flushes_owned_ledger_before_parent_under_foreign_key_enforcement(
+    tmp_path, monkeypatch
+):
+    """A successful pack delete must flush its child rows before deleting the
+    parent when SQLite enforces the real OrganizedFile.job_id FK. A qBit
+    failure, conversely, must retain the durable DELETING intent and ledger.
+    """
+    engine = get_engine(str(tmp_path / "pack-child-fk.db"))
+    SQLModel.metadata.create_all(engine)
+    successful_paths = [
+        tmp_path / "library" / f"Show - S01E{episode:02d}.mkv"
+        for episode in (1, 2)
+    ]
+    failed_path = tmp_path / "library" / "Other Show - S01E01.mkv"
+    for path in [*successful_paths, failed_path]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name)
+
+    with Session(engine) as session:
+        def add_pack_job(qbit_hash, paths):
+            job = MediaJob(
+                type=MediaType.TV, title="Show", release_title="Show.S01",
+                qbit_hash=qbit_hash, category="skald-tv", status=JobStatus.ORGANIZED,
+                organization_mode=OrganizationMode.PACK, operation_token=f"organize-{qbit_hash}",
+            )
+            session.add(job)
+            session.flush()
+            rows = []
+            for path in paths:
+                identity = path.stat()
+                rows.append(OrganizedFile(
+                    job_id=job.id, path=str(path), lifecycle=FileLifecycle.PUBLISHED,
+                    operation_token=job.operation_token,
+                    published_device=identity.st_dev, published_inode=identity.st_ino,
+                ))
+            session.add_all(rows)
+            session.commit()
+            return job.id, [row.id for row in rows]
+
+        successful_job_id, successful_ledger_ids = add_pack_job("successful", successful_paths)
+        failed_job_id, failed_ledger_ids = add_pack_job("failed", [failed_path])
+
+    class FailingQbit:
+        def delete_torrent(self, torrent_hash, delete_files=True):
+            raise RuntimeError("qBittorrent unavailable")
+
+    with Session(engine) as session:
+        failed_job = request_job_deletion(session, failed_job_id)
+        outcome = reconcile_deleting_job(session, failed_job, FailingQbit())
+
+    assert outcome == DeletionOutcome.QBIT_FAILURE
+    with Session(engine) as session:
+        assert session.get(MediaJob, failed_job_id).status == JobStatus.DELETING
+        assert all(session.get(OrganizedFile, row_id) is not None for row_id in failed_ledger_ids)
+
+    class RecordingQbit:
+        def __init__(self):
+            self.deleted_hashes = []
+
+        def delete_torrent(self, torrent_hash, delete_files=True):
+            self.deleted_hashes.append(torrent_hash)
+
+    fake_qbit = RecordingQbit()
+    with Session(engine) as session:
+        successful_job = request_job_deletion(session, successful_job_id)
+        parent_scheduled = False
+        flushes_before_parent = []
+        original_delete = session.delete
+        original_flush = session.flush
+
+        def record_delete(instance):
+            nonlocal parent_scheduled
+            if instance is successful_job:
+                parent_scheduled = True
+            return original_delete(instance)
+
+        def record_flush():
+            flushes_before_parent.append(not parent_scheduled)
+            return original_flush()
+
+        monkeypatch.setattr(session, "delete", record_delete)
+        monkeypatch.setattr(session, "flush", record_flush)
+        outcome = reconcile_deleting_job(session, successful_job, fake_qbit)
+
+    assert outcome == DeletionOutcome.DELETED
+    assert flushes_before_parent[0]
+    assert all(not path.exists() for path in successful_paths)
+    with Session(engine) as session:
+        assert session.get(MediaJob, successful_job_id) is None
+        assert all(session.get(OrganizedFile, row_id) is None for row_id in successful_ledger_ids)
+    assert fake_qbit.deleted_hashes == ["successful"]
 
 
 async def test_generic_polling_never_converts_deleting_to_failed_on_recovery_discovery_error(
