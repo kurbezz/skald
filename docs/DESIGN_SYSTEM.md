@@ -104,6 +104,13 @@ invent a second shadow language.
   push the logout form right. Height is automatic (minimum 62px). Logout is
   a POST form shown only when `auth_enabled`; `.logout-link` resets the button
   to the same appearance as a text link. The brand links to `/`.
+- On phones (≤640px), the same nav becomes a fixed five-section bottom bar:
+  Search, Jobs, Subscriptions, Quality, Events. The Subscriptions tab has a
+  slightly wider column so the same 12px label fits even at 360px.
+  Small inline SVG icons and counters keep every section visible. Brand and
+  POST logout stay in the top header; login shows neither nav nor logout.
+  Desktop navigation is unchanged. `viewport-fit=cover`, safe-area padding,
+  and the dark `theme-color` support mobile browser chrome.
 - `.skip-link` targets focusable `main#main`; an amber inline SVG favicon uses
   the same SK brand mark. Sticky-header clearance uses scroll padding/margins.
 - `main` — plays a one-shot `rise` keyframe animation (fade + translateY(8px)
@@ -201,9 +208,15 @@ cells are sans, 14px, row-hover highlights via `--surface-2`. Use
 `.release-title` for filename/release-style strings that should read as
 mono. Long release names wrap with `overflow-wrap: anywhere`. Sizes divided
 by 1073741824 are labeled GiB; unknown/zero sizes display an em dash.
-On small screens subscription titles (first column) and job titles (third
+At 641–780px subscription titles (first column) and job titles (third
 column) are sticky with solid backgrounds. `.table--sticky-title` provides
-first-column opt-in for other tables. Event rows have `event-{id}` anchors
+first-column opt-in for other tables. At ≤640px, `.mobile-cards` tables use
+one bordered grid card per row, without horizontal scrolling. Add `.card-title`
+to the title cell (shown first, spanning the card), `data-label` to metadata
+cells, `.card-wide` to long content/progress, and `.card-actions` to the full-width
+action cell. Keep these attributes in live-update templates too. The original
+header remains screen-reader-accessible; search replaces its interactive sort
+header with a visible `.mobile-sort` navigation. Event rows have `event-{id}` anchors
 and an amber target highlight after a mark-read redirect.
 
 ### Progress bar
@@ -260,7 +273,9 @@ messages use `role="status"`. There is no automatic dismissal or timer.
 `.nav-count` is a compact, nonshrinking 11px numeric pill inside main-nav links:
 Jobs counts attention items, Events counts unread events. Zero counts are
 omitted. Active-link pills turn amber. The link and pill stay together when
-the mobile nav scrolls; hidden text supplies the count's meaning.
+the tablet nav scrolls; on phones the pill sits over its section icon. Hidden
+text supplies the count's meaning. Mobile counters and other secondary text
+use at least 12px.
 
 ### Error pages (`templates/error.html`)
 A dedicated template (extends `base.html`, so it gets the full topbar/nav
@@ -283,6 +298,31 @@ error boundary. The grab mini-form
 fixed per-field widths (title/year/season/episode) since it lives inside a
 table cell; the retry form (`.retry-form`) uses labeled stacked
 label+input pairs (mono uppercase label above a full input).
+
+At ≤780px, text/number/password fields, selects and textareas use 16px to avoid
+iOS focus zoom. Interactive targets are at least 44×44px; checkbox labels are
+at least 48px tall (the visual checkbox stays compact). Search uses a full-width
+query field and `inputmode="search"` / `enterkeyhint="search"`; integer metadata
+uses numeric input mode, GiB inputs use decimal mode. At ≤640px Grab and retry
+actions span the available width; Grab metadata uses a two-column grid with a
+full-width title and episode-set field.
+
+Quality and custom TV scope forms use sticky save footers above the bottom nav
+on phones. Their containers must not clip overflow, or sticky positioning stops
+working. Keep the footer in normal document flow so the final fields can scroll
+clear of it. Hide the duplicate scope-intro save button on phones when the footer
+exists. Body height is automatic, with bottom padding for the bar, home indicator
+and 32px breathing room: the last content and flashes must scroll above the bar.
+No timed flashes, new animation, or mobile-only JS is needed.
+
+Job tables additionally use `.job-cards`: compact title/status header, a
+`Movie · #7` metadata line, and inline progress/percentage beside a quiet Delete
+button. The amber title is the primary details target (44px tall; long titles
+truncate on phones, with the full title available on detail). Attention excerpts
+clamp to two lines, and keep-files/Delete actions share a row. These rules also
+apply to live-inserted rows; desktop tables retain their existing presentation.
+TV search guesses missing season or episode show a warning such as
+`Arrival (2016) — season/episode needed`, not a misleading `S?E?` destination.
 
 ### Tab bar
 `.tab-bar` is a bottom-bordered flex row of `.tab-link`s (mono, uppercase,
@@ -359,13 +399,18 @@ disables entry animation, pulse, transitions, and smooth scrolling.
 Breakpoints:
 - **900px:** nav moves to its own horizontally scrolling row with proximity
   scroll-snap. Brand/logout remain visible; the header itself never scrolls.
-- **780px:** sticky table titles; compact 12px table-cell padding.
-- **640px:** shell/header padding drops from 28px to 16px, search controls
-  wrap, TV layout and quality split groups become one column, quality footer
-  stacks. TV sidebar uses two columns; buttons wrap so 441–520px stays safe.
-- **440px:** TV hero/sidebar become one column; hero actions span full width.
+- **780px:** touch targets ≥44px, inputs ≥16px, secondary text ≥12px. TV detail
+  layout becomes one column. Tablet tables retain sticky titles and compact
+  12px padding (641–780px only).
+- **640px:** safe-area-aware 16px shell/header padding, fixed bottom nav,
+  table cards, full-width search field, stacked actions, quality split groups
+  become one column, sticky quality/scope save footers. Bottom shell padding
+  is moved to body to reserve space for navigation and the home indicator. TV hero keeps a compact
+  poster beside the title; episodes wrap instead of truncating.
+- **440px:** TV sidebar becomes one column; hero actions span full width.
 
-Tables rely on `.table-wrap`'s horizontal scroll rather than reflowing
-columns. `.detail-grid`'s flexbox wrapping and `.grab-form`'s flex-wrap
-handle narrow widths without needing their own breakpoint — verify this
-still holds before adding new fixed-width elements to either.
+Use `.mobile-cards` for every new data table and supply its cell roles/labels.
+Do not hide page overflow to mask wide content. Long unbroken titles, errors,
+paths, and delivery badges must wrap. Check both `scrollWidth > innerWidth`
+and `scrollWidth > device viewport width`: mobile browsers may expand the
+layout viewport to accommodate accidental overflow.

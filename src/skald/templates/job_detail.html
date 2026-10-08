@@ -117,14 +117,14 @@
       <input type="text" name="title" value="{{ job.title }}" required>
     </label>
     <label>Year
-      <input type="number" name="year" value="{{ job.year or '' }}"{% if job.type.value == "movie" %} required{% endif %}>
+      <input type="number" inputmode="numeric" name="year" value="{{ job.year or '' }}"{% if job.type.value == "movie" %} required{% endif %}>
     </label>
     {% if job.type.value == "tv" %}
     <label>Season
-      <input type="number" name="season" value="{{ job.season or '' }}" required>
+      <input type="number" inputmode="numeric" name="season" value="{{ job.season or '' }}" required>
     </label>
     <label>Episode
-      <input type="number" name="episode" value="{{ job.episode or '' }}" required>
+      <input type="number" inputmode="numeric" name="episode" value="{{ job.episode or '' }}" required>
     </label>
     {% if episode_set_input %}
     <label class="episode-set-field">Episode set

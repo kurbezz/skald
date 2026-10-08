@@ -25,7 +25,7 @@
 <section data-active-jobs data-ws-url="/ws/jobs/active">
   {{ macros.live_status() }}
   <div class="panel table-wrap" data-active-table {% if not jobs %}hidden{% endif %}>
-    <table>
+    <table class="mobile-cards job-cards job-cards--queue">
       <thead>
         <tr>
           <th scope="col">ID</th>
@@ -53,18 +53,18 @@
 
   <template data-active-job-template>
     <tr data-job-row>
-      <td><span class="job-id" data-job-id-label></span></td>
-      <td class="cell-muted" data-job-type></td>
-      <td>
+      <td data-label="ID"><span class="job-id" data-job-id-label></span></td>
+      <td data-label="Type" class="cell-muted" data-job-type></td>
+      <td class="card-title">
         <a class="job-link" data-job-title></a>
         <div class="cell-muted" data-job-episode hidden></div>
       </td>
-      <td>
+      <td data-label="Status">
         <span class="badge" data-job-status-badge>
           <span class="badge-dot" aria-hidden="true"></span><span data-job-status-label></span>
         </span>
       </td>
-      <td>
+      <td data-label="Progress" class="card-wide">
         <div class="progress-cell" data-job-progress role="progressbar" aria-valuemin="0" aria-valuemax="100">
           <div class="progress-track" aria-hidden="true">
             <div class="progress-fill" data-job-progress-fill></div>
@@ -72,7 +72,7 @@
           <span class="progress-pct" data-job-progress-text aria-hidden="true"></span>
         </div>
       </td>
-      <td>
+      <td class="card-actions">
         <form method="post" data-job-delete-form data-confirm="">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn-danger">Delete</button>
@@ -84,7 +84,7 @@
 {% elif tab == "attention" %}
 {% if jobs %}
 <div class="panel table-wrap">
-  <table>
+  <table class="mobile-cards job-cards job-cards--attention">
     <thead>
       <tr>
         <th scope="col">ID</th>
@@ -98,19 +98,19 @@
     <tbody>
       {% for job in jobs %}
       <tr data-job-row data-job-id="{{ job.id }}" data-job-status="{{ job.status.value }}">
-        <td><span class="job-id">#{{ job.id }}</span></td>
-        <td class="cell-muted">{{ job.type.value }}</td>
-        <td>
+        <td data-label="ID"><span class="job-id">#{{ job.id }}</span></td>
+        <td data-label="Type" class="cell-muted">{{ job.type.value }}</td>
+        <td class="card-title">
           <a class="job-link" href="/jobs/{{ job.id }}">{{ job.title }}</a>
           {% if job.type.value == "tv" %}
           <div class="cell-muted">{{ tv_episode_labels[job.id] }}</div>
           {% endif %}
         </td>
-        <td>{{ macros.status_badge(job.status.value) }}</td>
-        <td class="cell-muted">
+        <td data-label="Status">{{ macros.status_badge(job.status.value) }}</td>
+        <td data-label="Problem" class="cell-muted card-wide">
           {% if error_excerpts[job.id] %}<span data-job-error-excerpt>{{ error_excerpts[job.id] }}</span> {% endif %}<a class="job-link" href="/jobs/{{ job.id }}" aria-label="Open details for {{ job.title }}">Details</a>
         </td>
-        <td><div class="job-actions">{{ macros.row_actions(job, csrf_token) }}</div></td>
+        <td class="card-actions"><div class="job-actions">{{ macros.row_actions(job, csrf_token) }}</div></td>
       </tr>
       {% endfor %}
     </tbody>
@@ -125,7 +125,7 @@
 {% else %}
 {% if jobs %}
 <div class="panel table-wrap">
-  <table class="table--sticky-title">
+  <table class="table--sticky-title mobile-cards job-cards job-cards--history">
     <thead>
       <tr>
         <th scope="col">Title</th>
@@ -137,15 +137,15 @@
     <tbody>
       {% for job in jobs %}
       <tr data-job-row data-job-id="{{ job.id }}" data-job-status="{{ job.status.value }}">
-        <td>
+        <td class="card-title">
           <a class="job-link" href="/jobs/{{ job.id }}">{{ job.title }}</a>
           {% if job.type.value == "tv" %}
           <div class="cell-muted">{{ tv_episode_labels[job.id] }}</div>
           {% endif %}
         </td>
-        <td class="cell-muted">{{ job.type.value }}</td>
-        <td class="cell-muted"><time datetime="{{ job.updated_at | isodt }}">{{ job.updated_at | dt }}</time></td>
-        <td><div class="job-actions">{{ macros.row_actions(job, csrf_token) }}</div></td>
+        <td data-label="Type" class="cell-muted">{{ job.type.value }}</td>
+        <td data-label="Finished" class="cell-muted"><time datetime="{{ job.updated_at | isodt }}">{{ job.updated_at | dt }}</time></td>
+        <td class="card-actions"><div class="job-actions">{{ macros.row_actions(job, csrf_token) }}</div></td>
       </tr>
       {% endfor %}
     </tbody>

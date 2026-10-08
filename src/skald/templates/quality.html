@@ -81,7 +81,7 @@
 
   <section class="quality-section quality-section--split" aria-labelledby="limits-heading">
     <div class="quality-section-head"><h3 id="limits-heading">Limits</h3><p>Use sizes only when a release must fit a known range. Sizes are in GiB; decimals are allowed (for example 1.5).</p></div>
-    <label class="quality-field" for="f-minimum-seeders"><span>Minimum seeders</span><input id="f-minimum-seeders" type="number" name="minimum_seeders" min="0" value="{{ form.minimum_seeders }}" required{{ invalid("minimum_seeders") }}></label>
+    <label class="quality-field" for="f-minimum-seeders"><span>Minimum seeders</span><input id="f-minimum-seeders" type="number" inputmode="numeric" name="minimum_seeders" min="0" value="{{ form.minimum_seeders }}" required{{ invalid("minimum_seeders") }}></label>
     {{ field_error("minimum_seeders") }}
     <label class="quality-field" for="f-minimum-size"><span>Minimum size (GiB)</span><input id="f-minimum-size" type="text" inputmode="decimal" name="minimum_size_gib" value="{{ form.minimum_size }}"{{ invalid("minimum_size_bytes") }}></label>
     {{ field_error("minimum_size_bytes") }}

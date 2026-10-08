@@ -10,7 +10,7 @@
 
 <form method="get" action="/search" class="search-form panel" role="search">
   <label class="visually-hidden" for="search-q">Search movies or TV shows</label>
-  <input id="search-q" type="text" name="q" value="{{ query }}" placeholder="Search movies or TV shows&hellip;">
+  <input id="search-q" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" name="q" value="{{ query }}" placeholder="Search movies or TV shows&hellip;">
   <label class="visually-hidden" for="search-type">Media type</label>
   <select id="search-type" name="type">
     <option value="movie" {% if type == "movie" %}selected{% endif %}>Movie</option>
@@ -22,8 +22,14 @@
 {% if error %}<div class="alert alert-error" role="alert">{{ error }}</div>{% endif %}
 
 {% if results %}
+<nav class="mobile-sort" aria-label="Sort search results">
+  <span>Sort by</span>
+  {% for field, label in [('size_bytes', 'Size'), ('seeders', 'Seeders'), ('leechers', 'Leechers')] %}
+  <a href="/search?q={{ query | urlencode }}&amp;type={{ type }}&amp;sort={{ field }}&amp;direction={% if sort == field and direction == 'desc' %}asc{% else %}desc{% endif %}"{% if sort == field %} aria-current="true"{% endif %}>{{ label }}{% if sort == field %} <span aria-hidden="true">{{ '↑' if direction == 'asc' else '↓' }}</span><span class="visually-hidden">{{ 'ascending' if direction == 'asc' else 'descending' }}</span>{% endif %}</a>
+  {% endfor %}
+</nav>
 <div class="panel table-wrap">
-  <table>
+  <table class="mobile-cards">
     <thead>
       <tr>
         <th scope="col">Release</th>
@@ -55,12 +61,12 @@
     <tbody>
       {% for item in results %}
       <tr>
-        <td><span class="release-title">{{ item.release.title }}</span></td>
-        <td class="cell-muted">{{ item.release.indexer }}</td>
-        <td class="cell-muted">{% if item.release.size_bytes and item.release.size_bytes > 0 %}{{ (item.release.size_bytes / 1073741824) | round(2) }} GiB{% else %}—{% endif %}</td>
-        <td><span class="seeders">&#9650;{{ item.release.seeders }}</span></td>
-        <td><span class="leechers">&#9660;{{ item.release.leechers }}</span></td>
-        <td>
+        <td class="card-title"><span class="release-title">{{ item.release.title }}</span></td>
+        <td data-label="Indexer" class="cell-muted">{{ item.release.indexer }}</td>
+        <td data-label="Size" class="cell-muted">{% if item.release.size_bytes and item.release.size_bytes > 0 %}{{ (item.release.size_bytes / 1073741824) | round(2) }} GiB{% else %}—{% endif %}</td>
+        <td data-label="Seeders"><span class="seeders">&#9650;{{ item.release.seeders }}</span></td>
+        <td data-label="Leechers"><span class="leechers">&#9660;{{ item.release.leechers }}</span></td>
+        <td class="card-actions">
           {% set index = loop.index0 %}{% include "_grab_row_form.html" %}
         </td>
       </tr>

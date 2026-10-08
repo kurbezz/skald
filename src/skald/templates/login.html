@@ -15,10 +15,10 @@
 
     <input type="hidden" name="next" value="{{ next }}">
     <label class="login-label" for="username">Username</label>
-    <input type="text" id="username" name="username" autocomplete="username" value="{{ username }}" {% if not username %}autofocus {% endif %}required>
+    <input type="text" id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" enterkeyhint="next" value="{{ username }}" {% if not username %}autofocus {% endif %}required>
 
     <label class="login-label" for="password">Password</label>
-    <input type="password" id="password" name="password" autocomplete="current-password" {% if username %}autofocus {% endif %}required>
+    <input type="password" id="password" name="password" autocomplete="current-password" enterkeyhint="go" {% if username %}autofocus {% endif %}required>
 
     <button type="submit" class="login-submit">Sign in</button>
   </form>

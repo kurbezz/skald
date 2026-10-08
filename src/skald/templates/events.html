@@ -15,7 +15,7 @@
 
 {% if event_rows %}
 <div class="panel table-wrap">
-  <table>
+  <table class="mobile-cards">
     <thead>
       <tr>
         <th scope="col">Event</th>
@@ -29,7 +29,7 @@
     <tbody>
       {% for event, release, attempts, before, candidate in event_rows %}
       <tr id="event-{{ event.id }}">
-        <td>
+        <td class="card-title">
           {% if event.kind.value == "upgrade_proposal" %}
           <span class="badge badge-downloading"><span class="badge-dot" aria-hidden="true"></span>Upgrade proposal</span>
           {% else %}
@@ -38,7 +38,7 @@
           <div class="release-title">{{ event.title }}</div>
           <div class="cell-muted">{{ event.body }}</div>
         </td>
-        <td class="cell-muted">
+        <td data-label="Quality" class="cell-muted card-wide">
           {% if before or candidate %}
           {% for key, name in [("resolution", "Resolution"), ("audio", "Audio"), ("hdr", "HDR")] %}
           <div>{{ name }}: {% if before %}{{ before[key] }}{% else %}—{% endif %} → {% if candidate %}{% if before and before[key] != candidate[key] %}<strong class="quality-changed">{{ candidate[key] }} <span class="visually-hidden">(changed)</span></strong>{% else %}{{ candidate[key] }}{% endif %}{% else %}—{% endif %}</div>
@@ -48,7 +48,7 @@
           <span aria-hidden="true">—</span><span class="visually-hidden">No quality comparison</span>
           {% endif %}
         </td>
-        <td>
+        <td data-label="Delivery" class="card-wide">
           {% if attempts %}
             {% for attempt in attempts %}
             {% if attempt.outcome.value == "sent" %}
@@ -63,15 +63,15 @@
           <span class="cell-muted">Not attempted</span>
           {% endif %}
         </td>
-        <td class="cell-muted"><time datetime="{{ event.created_at | isodt }}">{{ event.created_at | dt }}</time></td>
-        <td>
+        <td data-label="Created" class="cell-muted"><time datetime="{{ event.created_at | isodt }}">{{ event.created_at | dt }}</time></td>
+        <td data-label="Read state">
           {% if event.read_at %}
           <span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>Read</span>
           {% else %}
           <span class="badge badge-unread"><span class="badge-dot" aria-hidden="true"></span>Unread</span>
           {% endif %}
         </td>
-        <td>
+        <td class="card-actions">
           <div class="subscription-actions">
             {% if release %}
             <a class="job-link" href="/search?q={{ release.release_title | urlencode }}&amp;type={{ event.media_type.value }}" aria-label="Open manual search for {{ release.release_title }}">Review in search</a>

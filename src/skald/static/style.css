@@ -2408,7 +2408,7 @@ tr[id]:target {
   nav.main-nav a { scroll-snap-align: start; }
 }
 
-@media (max-width: 780px) {
+@media (min-width: 641px) and (max-width: 780px) {
   /* Explicit opt-in for new tables; content selectors preserve current templates. */
   .table-wrap :is(table.table--sticky-title, table:has(.subscription-auto)) > :is(thead, tbody) > tr > :first-child,
   .table-wrap table:has(tbody > tr > td:first-child > .job-id) > :is(thead, tbody) > tr > :nth-child(3) {
@@ -2540,6 +2540,258 @@ tr[id]:target {
   .tv-detail-actions .tv-back-link {
     justify-content: center;
   }
+}
+
+/* ---------- phone navigation, touch controls & table cards ---------- */
+
+.nav-icon,
+.mobile-sort { display: none; }
+
+/* Long user-provided titles must not set the width of the page. */
+.detail-head h1 { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.grab-organize-as .metadata-needed { color: var(--amber); }
+
+@media (max-width: 900px) {
+  .topbar-inner { min-width: 0; }
+  nav.main-nav { flex-basis: auto; min-width: 0; max-width: 100%; }
+}
+
+@media (max-width: 780px) {
+  :root { --mobile-nav-height: 76px; }
+  body { overflow-wrap: anywhere; }
+  :is(button, .btn, summary, input:not([type="hidden"]):not([type="checkbox"]), select, textarea) {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  /* Also cover compact component-specific controls without affecting desktop. */
+  body :is(input[type="text"], input[type="number"], input[type="password"], select, textarea),
+  body .grab-form input:is([type="text"], [type="number"]) {
+    font-size: 16px;
+    max-width: 100%;
+    min-width: 0;
+  }
+  body a:not(.skip-link):not(.visually-hidden) {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    min-width: 44px;
+    max-width: 100%;
+  }
+  .tv-check, .quality-choice { min-height: 48px; }
+  .quality-choice-note, .tv-check--season :is(strong, small),
+  .tv-episode-number, .tv-included-note, .tv-auto-note, .detail-crumbs,
+  .retry-form .episode-set-help, .grab-review-status, .subscription-auto-top button,
+  .nav-count, .tab-count, .badge, .live-status, .setup-required { font-size: 12px; }
+  .badge { white-space: normal; max-width: 100%; }
+  .badge-dot { flex-shrink: 0; }
+  .tv-detail-layout { grid-template-columns: 1fr; }
+  .tv-detail-hero { grid-template-columns: 76px minmax(0, 1fr); }
+  .tv-detail-poster { width: 76px; height: 108px; }
+  .tv-detail-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .detail-crumbs { flex-wrap: wrap; }
+  .detail-crumbs > :last-child { min-width: 0; }
+}
+
+@media (max-width: 640px) {
+  html { scroll-padding-top: 80px; scroll-padding-bottom: 160px; }
+  :where(main, main [id]) { scroll-margin-top: 80px; }
+  body {
+    background-attachment: scroll;
+    height: auto;
+    min-height: 100svh;
+    padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom) + 32px);
+  }
+  .shell {
+    padding-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right));
+    padding-bottom: 0;
+  }
+  main { padding-top: 24px; }
+  header.topbar { backdrop-filter: none; background: var(--bg); }
+  .topbar-inner {
+    min-height: 56px;
+    padding-top: env(safe-area-inset-top);
+    padding-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right));
+    flex-wrap: nowrap;
+  }
+  nav.main-nav {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 30;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) 88px repeat(2, minmax(0, 1fr));
+    gap: 2px;
+    width: 100%;
+    padding: 6px max(6px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
+    background: var(--bg);
+    border-top: 1px solid var(--border-control);
+    overflow: visible;
+    box-shadow: 0 -8px 24px #00000033;
+  }
+  nav.main-nav a {
+    position: relative;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    min-width: 0;
+    min-height: 63px;
+    padding: 7px 0;
+    font-family: var(--font-body);
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .nav-icon { display: block; width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .main-nav .nav-count { position: absolute; top: 0; right: 2px; padding: 0 4px; max-width: 100%; }
+  .page-head { margin-bottom: 20px; }
+  .search-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: 14px; }
+  .search-form input[type="text"] { width: 100%; grid-column: 1 / -1; }
+  .search-form button { white-space: normal; }
+  .search-form:not(:has(select)) button { grid-column: 1 / -1; }
+  .tabs-nav { gap: 4px; }
+  .tabs-nav > a { padding: 10px 8px; font-size: 12px; }
+  .mobile-sort { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 16px; font-size: 13px; }
+  .mobile-sort > span { flex-basis: 100%; color: var(--text-muted); }
+  .mobile-sort a { padding: 8px 12px; border: 1px solid var(--border-control); border-radius: var(--radius-sm); text-decoration: none; color: var(--text-muted); }
+  .mobile-sort a[aria-current] { color: var(--accent-strong); background: var(--accent-soft); border-color: var(--accent); }
+
+  /* Keep a single semantic table/DOM for live updates and no-JS rendering. */
+  .table-wrap:has(.mobile-cards) { overflow: visible; border: 0; background: transparent; box-shadow: none; }
+  table.mobile-cards, table.mobile-cards tbody { display: block; width: 100%; }
+  .mobile-cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  /* Sorting has a visible phone equivalent; don't leave invisible tab stops. */
+  .mobile-cards thead:has(.sort-link) { display: none; }
+  .mobile-cards tbody > tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 12px;
+    padding: 16px;
+    margin-bottom: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+  /* Override the tablet sticky-title rules, including their specificity. */
+  .table-wrap table.mobile-cards > tbody > tr > td {
+    display: block;
+    position: static;
+    min-width: 0;
+    max-width: none;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow-wrap: anywhere;
+  }
+  .mobile-cards td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 5px;
+    color: var(--text-faint);
+    font-family: var(--font-display);
+    font-size: 12px;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+  }
+  .mobile-cards :is(.card-title, .card-wide, .card-actions) { grid-column: 1 / -1; }
+  .mobile-cards .card-title { order: -1; }
+  .mobile-cards .card-title > :is(.job-link, .subscription-detail-link) { font-size: 16px; }
+  .mobile-cards .card-title > .badge { margin-bottom: 8px; }
+  .table-wrap table.mobile-cards td.card-actions { padding-top: 14px; border-top: 1px solid var(--border); }
+  .card-actions :is(form, button, .job-actions, .subscription-actions) { width: 100%; min-width: 0; max-width: none; }
+  .card-actions form { margin: 0; }
+  .card-actions > form + form { margin-top: 12px; }
+  .card-actions :is(.job-actions, .subscription-actions) { gap: 12px; }
+  .card-actions button { white-space: normal; text-align: center; }
+  /* Jobs are a compact monitoring list, not a stack of labeled form fields. */
+  .job-cards tbody > tr {
+    grid-template-columns: max-content minmax(0, 1fr) auto;
+    gap: 2px 6px;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    align-items: center;
+  }
+  .job-cards td[data-label]::before { display: none; }
+  .job-cards .card-title { grid-column: 1 / 3; grid-row: 1; }
+  .job-cards .card-title > a.job-link {
+    display: block;
+    overflow: hidden;
+    width: 100%;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    line-height: 44px;
+    color: var(--accent-strong);
+  }
+  .job-cards [data-label="Status"] { grid-column: 3; grid-row: 1; justify-self: end; }
+  .job-cards .badge { max-width: 132px; font-size: 12px; letter-spacing: 0; padding: 3px 6px; }
+  .job-cards [data-label="Type"] { grid-column: 1; grid-row: 2; text-transform: capitalize; }
+  .job-cards [data-label="Type"]::after { content: " ·"; }
+  .job-cards [data-label="ID"] { grid-column: 2 / -1; grid-row: 2; }
+  .job-cards [data-label="Progress"] { grid-column: 1 / 3; grid-row: 3; padding-right: 8px; }
+  .table-wrap table.job-cards td.card-actions {
+    grid-column: 3;
+    grid-row: 3;
+    padding-top: 0;
+    border-top: 0;
+    justify-self: end;
+  }
+  .job-cards .card-actions :is(form, button, .job-actions) { width: auto; min-width: 0; max-width: 100%; }
+  .job-cards .card-actions .job-actions { flex-wrap: nowrap; gap: 12px; }
+  .job-cards .card-actions button { padding: 8px 10px; font-size: 12px; }
+  .job-cards .card-actions [data-job-delete-form] { flex-shrink: 0; }
+  .job-cards .card-actions .btn-danger { white-space: nowrap; }
+  .job-cards .card-actions .btn-danger { border-color: var(--border); background: transparent; color: var(--text-muted); }
+  .job-cards .card-actions .btn-danger:hover { border-color: var(--red); color: var(--error-text); }
+  .job-cards--attention [data-label="Problem"] { grid-column: 1 / -1; grid-row: 3; margin-top: 6px; }
+  .job-cards--attention [data-job-error-excerpt] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-width: 0; max-width: none; margin: 0; }
+  /* The title already links to these details; avoid a duplicate mobile row. */
+  body .job-cards--attention [data-label="Problem"] > a { display: none; }
+  .table-wrap table.job-cards--attention td.card-actions { grid-column: 1 / -1; grid-row: 4; margin-top: 8px; }
+  .job-cards--history .card-title { grid-column: 1 / -1; }
+  .job-cards--history [data-label="Finished"] { grid-column: 2 / -1; grid-row: 2; }
+  .table-wrap table.job-cards--history td.card-actions { grid-column: 1 / -1; margin-top: 8px; }
+  .subscription-scope-note { max-width: none; }
+  .subscription-scope-note a { margin-left: 0; }
+  .progress-cell { min-width: 0; }
+  .grab-review { min-width: 0; width: 100%; }
+  .grab-review-toggle { width: 100%; }
+  .grab-review-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grab-field:first-child, .grab-field:has([name="episode_set"]) { grid-column: 1 / -1; }
+  .grab-form input:is([type="text"], [type="number"]) { width: 100%; }
+  .job-actions { gap: 12px; }
+  .detail-head .job-actions :is(form, button) { width: 100%; max-width: none; text-align: center; }
+  .retry-form { align-items: stretch; }
+  .retry-form > :is(label, button) { width: 100%; min-width: 0; }
+  .retry-form input { width: 100%; }
+  .retry-panel { padding: 16px; }
+  .detail-field { flex-basis: 130px; padding: 14px; }
+  .detail-field--wide { flex-basis: 100%; }
+  .tv-detail-hero { grid-template-columns: 64px minmax(0, 1fr); padding: 16px; }
+  .tv-detail-poster { width: 64px; height: 91px; }
+  .tv-detail-copy h1 { font-size: 22px; }
+  .tv-section-heading, .tv-scope-body, .quality-section, .quality-form > .quality-section-head { padding: 16px; }
+  .tv-series-choice button, .tv-manual-intro button { width: 100%; }
+  .tv-episode-title { white-space: normal; overflow-wrap: anywhere; }
+  .tv-manual-footer, .quality-form-footer {
+    position: sticky;
+    bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom));
+    z-index: 10;
+    padding: 12px 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--border-control);
+    box-shadow: 0 -6px 16px #00000022;
+  }
+  .tv-manual-footer { margin-inline: -16px; margin-bottom: -16px; }
+  .tv-manual-form:has(.tv-manual-footer) .tv-manual-intro > button { display: none; }
+  .tv-scope, .quality-form { overflow: visible; }
+  .quality-form > .quality-section-head { border-radius: var(--radius) var(--radius) 0 0; }
+  .quality-form-footer { gap: 8px; }
+  .tv-manual-footer button, .quality-form-footer button { width: 100%; }
+  .quality-form-footer p { font-size: 12px; }
+  .quality-field input { width: 100%; }
+  .quality-advanced > summary { padding-block: 12px; }
+  .login-wrap { padding-top: 12px; }
+  .login-card { padding: 24px; }
+  .error-page { margin-top: 24px; padding: 28px 20px; }
 }
 
 /* ---------- reduced motion ---------- */

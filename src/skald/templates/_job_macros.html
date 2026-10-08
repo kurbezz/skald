@@ -45,17 +45,17 @@ Remove “{{ job.title }}” from the list and qBittorrent? Downloaded files and
 
 {% macro job_row(job, csrf_token, episode_label="", live=False) -%}
 <tr data-job-row data-job-id="{{ job.id }}" data-job-status="{{ job.status.value }}">
-  <td><span class="job-id" data-job-id-label>#{{ job.id }}</span></td>
-  <td class="cell-muted" data-job-type>{{ job.type.value }}</td>
-  <td>
+  <td data-label="ID"><span class="job-id" data-job-id-label>#{{ job.id }}</span></td>
+  <td data-label="Type" class="cell-muted" data-job-type>{{ job.type.value }}</td>
+  <td class="card-title">
     <a class="job-link" data-job-title href="/jobs/{{ job.id }}">{{ job.title }}</a>
     {% if job.type.value == "tv" %}
     <div class="cell-muted" data-job-episode>{{ episode_label }}</div>
     {% endif %}
   </td>
-  <td>{{ status_badge(job.status.value) }}</td>
-  <td>{{ progress(job) }}</td>
-  <td>{{ row_actions(job, csrf_token) }}</td>
+  <td data-label="Status">{{ status_badge(job.status.value) }}</td>
+  <td data-label="Progress" class="card-wide">{{ progress(job) }}</td>
+  <td class="card-actions">{{ row_actions(job, csrf_token) }}</td>
 </tr>
 {%- endmacro %}
 
