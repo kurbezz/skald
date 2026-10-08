@@ -1,3 +1,7 @@
+import hashlib
+
+import httpx
+import pytest
 import qbittorrentapi
 
 from skald.qbittorrent import QbittorrentClient, TorrentFile, extract_hash_from_magnet
@@ -92,16 +96,117 @@ def test_add_torrent_magnet_ignores_conflict_for_duplicate():
     assert torrent_hash == "aabbccddeeff00112233445566778899aabbccdd"
 
 
-def test_add_torrent_falls_back_to_diff_for_non_magnet():
-    fake = FakeQbitApi()
+INFO = b"d6:lengthi5e4:name1:a12:piece lengthi16384e6:pieces20:" + b"x" * 20 + b"e"
+TORRENT = b"d8:announce3:foo4:info" + INFO + b"7:comment2:hie"
+TORRENT_HASH = hashlib.sha1(INFO).hexdigest()
+SECRET_URL = "http://localhost:9117/dl/x/?jackett_apikey=SECRETKEY&file=a"
+
+
+class UploadQbitApi(FakeQbitApi):
+    def __init__(self, add_result="Ok.", appear=True, conflict=False):
+        super().__init__()
+        self.uploads = []
+        self.add_result = add_result
+        self.appear = appear
+        self.conflict = conflict
+
+    def torrents_add(self, urls=None, category=None, is_paused=False, torrent_files=None):
+        if urls is not None:
+            self.added.append((urls, category, is_paused))
+            return "Ok."
+        self.uploads.append((torrent_files, category, is_paused))
+        if self.conflict:
+            raise qbittorrentapi.exceptions.Conflict409Error("Conflict")
+        if self.appear:
+            self.torrents.append(FakeTorrent(TORRENT_HASH))
+        return self.add_result
+
+
+def _response(status=200, content=b"", location=None):
+    headers = {"location": location} if location else {}
+    return httpx.Response(status, content=content, headers=headers)
+
+
+def _client(fake, response):
+    seen = []
+
+    def http_get(url):
+        seen.append(url)
+        return response
+
     client = QbittorrentClient(
         host="http://localhost:8080", username="admin", password="pw",
-        client_factory=lambda: fake,
+        client_factory=lambda: fake, http_get=http_get, sleep=lambda s: None,
     )
+    return client, seen
 
-    torrent_hash = client.add_torrent("http://example.com/file.torrent", category="skald-movie")
 
-    assert torrent_hash == "newhash123"
+def test_add_torrent_downloads_file_and_uploads_bytes():
+    fake = UploadQbitApi()
+    client, seen = _client(fake, _response(content=TORRENT))
+
+    torrent_hash = client.add_torrent_paused(SECRET_URL, category="skald-movie")
+
+    assert torrent_hash == TORRENT_HASH
+    assert seen == [SECRET_URL]
+    assert fake.uploads == [(TORRENT, "skald-movie", True)]
+    assert fake.added == []
+
+
+def test_add_torrent_redirect_to_magnet_uses_magnet_path():
+    fake = UploadQbitApi()
+    magnet = "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD&dn=T"
+    client, _ = _client(fake, _response(302, location=magnet))
+
+    torrent_hash = client.add_torrent(SECRET_URL, category="c")
+
+    assert torrent_hash == "aabbccddeeff00112233445566778899aabbccdd"
+    assert fake.added == [(magnet, "c", False)]
+    assert fake.uploads == []
+
+
+def test_add_torrent_file_conflict_returns_hash():
+    fake = UploadQbitApi(conflict=True)
+    client, _ = _client(fake, _response(content=TORRENT))
+
+    assert client.add_torrent(SECRET_URL, category="c") == TORRENT_HASH
+
+
+def test_add_torrent_http_error_does_not_leak_url():
+    fake = UploadQbitApi()
+    client, _ = _client(fake, _response(500))
+
+    with pytest.raises(RuntimeError) as error:
+        client.add_torrent(SECRET_URL, category="c")
+
+    assert "SECRETKEY" not in str(error.value)
+    assert "localhost" not in str(error.value)
+    assert "500" in str(error.value)
+
+
+def test_add_torrent_invalid_bencode_raises():
+    fake = UploadQbitApi()
+    client, _ = _client(fake, _response(content=b"<html>not a torrent</html>"))
+
+    with pytest.raises(RuntimeError, match="not a valid torrent"):
+        client.add_torrent(SECRET_URL, category="c")
+    assert fake.uploads == []
+
+
+def test_add_torrent_never_appearing_raises_without_real_sleep():
+    fake = UploadQbitApi(appear=False)
+    client, _ = _client(fake, _response(content=TORRENT))
+
+    with pytest.raises(RuntimeError, match="did not report a new torrent"):
+        client.add_torrent(SECRET_URL, category="c")
+
+
+def test_add_torrent_fails_result_raises_when_not_present():
+    fake = UploadQbitApi(add_result="Fails.", appear=False)
+    client, _ = _client(fake, _response(content=TORRENT))
+
+    with pytest.raises(RuntimeError):
+        client.add_torrent(SECRET_URL, category="c")
 
 
 def test_delete_torrent_calls_api_with_delete_files():
