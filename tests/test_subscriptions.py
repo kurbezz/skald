@@ -722,6 +722,51 @@ async def test_auto_download_failure_is_isolated_retryable_and_never_duplicates_
     assert len(session.exec(select(MediaJob)).all()) == 1
 
 
+def test_release_fingerprint_prefers_info_hash_then_guid_then_url():
+    def make(url, guid=None, info_hash=None):
+        return ReleaseResult("T", "idx", 1, 1, 0, url, guid=guid, info_hash=info_hash)
+
+    assert release_fingerprint(1, make("u1", "g", "AA")) == release_fingerprint(1, make("u2", "g2", "aa"))
+    assert release_fingerprint(1, make("u1", "g")) == release_fingerprint(1, make("u2", "g"))
+    assert release_fingerprint(1, make("u1", "g")) != release_fingerprint(1, make("u1", "g2"))
+    assert release_fingerprint(1, make("u1")) != release_fingerprint(1, make("u2"))
+    assert release_fingerprint(1, make("u1", "g")) != release_fingerprint(2, make("u1", "g"))
+
+
+async def test_rescan_with_rotated_download_url_does_not_duplicate_release_event_or_job(session):
+    now = datetime(2026, 9, 3, tzinfo=UTC)
+    subscription = MediaSubscription(
+        tmdb_id=603, type=MediaType.MOVIE, title="The Matrix", year=1999,
+        auto_download=True, next_check_at=now,
+    )
+    session.add(subscription)
+    session.commit()
+    qbit = RecordingQbit()
+
+    def indexer_with(url):
+        return ScanIndexer([ReleaseResult(
+            "The.Matrix.1999.1080p.WEB", "jackett", 1, 5, 0, url,
+            guid="https://tracker.example/details?id=1",
+        )])
+
+    await scan_due_subscriptions(
+        session, indexer_with("http://j/dl/?path=AAA"), qbit=qbit, settings=Settings(),
+        interval_seconds=60, now=now,
+    )
+    events_after_first = len(session.exec(select(SubscriptionEvent)).all())
+    await scan_due_subscriptions(
+        session, indexer_with("http://j/dl/?path=BBB"), qbit=qbit, settings=Settings(),
+        interval_seconds=60, now=now + timedelta(seconds=60),
+    )
+
+    session.refresh(subscription)
+    assert len(session.exec(select(SubscriptionRelease)).all()) == 1
+    assert len(session.exec(select(SubscriptionEvent)).all()) == events_after_first >= 1
+    assert len(session.exec(select(MediaJob)).all()) == 1
+    assert qbit.add_calls == [("http://j/dl/?path=AAA", "skald-movie")]
+    assert subscription.auto_grabbed_release_id is not None
+
+
 class FakeTmdb:
     def __init__(self, results=None, media=None, seasons=None, season=None, error=None, configured=True):
         self.results = results or []
@@ -1198,8 +1243,15 @@ def test_tv_subscription_detail_and_season_routes(client, app, captured_template
     assert detail.status_code == 200
     assert captured_templates[-1][0] == "subscription_detail.html"
     assert captured_templates[-1][1]["subscription"].id == subscription_id
-    assert captured_templates[-1][1]["seasons"] == seasons
-    assert captured_templates[-1][1]["scopes"][0].season_number == 1
+    context = captured_templates[-1][1]
+    assert [(s["tmdb_id"], s["number"], s["name"]) for s in context["seasons"]] == [
+        (3571, 0, "Specials"), (3572, 1, "Season 1"),
+    ]
+    assert context["seasons"][1]["episodes"] == [{"tmdb_id": 62001, "number": 1, "name": "Pilot"}]
+    assert context["scopes"][0].season_number == 1
+    assert context["series_scope_active"] is False
+    assert context["selected_season_ids"] == {3572}
+    assert context["selected_episode_ids"] == set()
     assert tmdb.seasons_requests == [1396]
     assert episodes.json() == {
         "tmdb_id": 3572,
@@ -1213,7 +1265,213 @@ def test_tv_subscription_detail_and_season_routes(client, app, captured_template
             "air_date": "2008-01-20",
         }],
     }
-    assert tmdb.season_requests == [(1396, 1)]
+    assert sorted(tmdb.season_requests) == [(1396, 0), (1396, 1), (1396, 1)]
+
+
+class SeasonsTmdb(FakeTmdb):
+    EPISODES = {
+        1: [TmdbEpisode(101, 1, "E1", None), TmdbEpisode(102, 2, "E2", None)],
+        2: [TmdbEpisode(201, 1, "F1", None), TmdbEpisode(202, 2, "F2", None)],
+    }
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            seasons=[TmdbSeason(10, 1, "Season 1", None, 2), TmdbSeason(20, 2, "Season 2", None, 2)],
+            **kwargs,
+        )
+
+    async def get_tv_season(self, tmdb_id, season_number):
+        if self.error:
+            raise self.error
+        season = self.seasons[season_number - 1]
+        return TmdbTvSeason(
+            season.tmdb_id, season_number, season.name, None, self.EPISODES[season_number]
+        )
+
+
+def _make_tv(app, with_scope=False):
+    with Session(app.state.engine) as db:
+        subscription = MediaSubscription(
+            tmdb_id=1396, type=MediaType.TV, title="Show",
+            next_check_at=datetime(2020, 1, 1, tzinfo=UTC) + timedelta(days=10_000),
+        )
+        db.add(subscription)
+        db.commit()
+        db.refresh(subscription)
+        if with_scope:
+            db.add(TvSubscriptionScope(
+                subscription_id=subscription.id, tmdb_series_id=1396, includes_future_content=True
+            ))
+            db.commit()
+        return subscription.id
+
+
+def _scopes(app, subscription_id):
+    with Session(app.state.engine) as db:
+        return db.exec(
+            select(TvSubscriptionScope).where(TvSubscriptionScope.subscription_id == subscription_id)
+        ).all()
+
+
+def _next_check(app, subscription_id):
+    with Session(app.state.engine) as db:
+        return db.get(MediaSubscription, subscription_id).next_check_at
+
+
+def test_scope_series_mode_replaces_rows_and_bumps_next_check(client, app):
+    app.state.tmdb = SeasonsTmdb()
+    subscription_id = _make_tv(app)
+    with Session(app.state.engine) as db:
+        db.add(TvSubscriptionScope(
+            subscription_id=subscription_id, tmdb_series_id=1396, tmdb_season_id=10, season_number=1
+        ))
+        db.commit()
+
+    response = client.post(
+        f"/subscriptions/{subscription_id}/scope", data={"scope_mode": "series"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/subscriptions/{subscription_id}"
+    rows = _scopes(app, subscription_id)
+    assert len(rows) == 1
+    assert rows[0].includes_future_content is True
+    assert rows[0].tmdb_series_id == 1396
+    assert rows[0].tmdb_season_id is None and rows[0].tmdb_episode_id is None
+    next_check = _next_check(app, subscription_id)
+    assert next_check.replace(tzinfo=UTC) <= datetime.now(UTC)
+
+
+def test_scope_manual_mode_skips_episodes_covered_by_selected_season(client, app):
+    app.state.tmdb = SeasonsTmdb()
+    subscription_id = _make_tv(app, with_scope=True)
+
+    response = client.post(
+        f"/subscriptions/{subscription_id}/scope",
+        data={"scope_mode": "manual", "season_ids": [10], "episode_ids": [102, 202]},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    rows = _scopes(app, subscription_id)
+    shapes = sorted(
+        (r.tmdb_season_id, r.season_number, r.tmdb_episode_id, r.episode_number,
+         r.includes_future_content)
+        for r in rows
+    )
+    assert shapes == [(10, 1, None, None, False), (20, 2, 202, 2, False)]
+    assert _next_check(app, subscription_id).replace(tzinfo=UTC) <= datetime.now(UTC)
+
+
+def test_scope_manual_empty_selection_clears_rows(client, app):
+    app.state.tmdb = SeasonsTmdb()
+    subscription_id = _make_tv(app, with_scope=True)
+
+    response = client.post(
+        f"/subscriptions/{subscription_id}/scope", data={"scope_mode": "manual"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert _scopes(app, subscription_id) == []
+
+
+def test_scope_rejects_invalid_requests(client, app, captured_templates):
+    app.state.tmdb = SeasonsTmdb()
+    subscription_id = _make_tv(app, with_scope=True)
+    with Session(app.state.engine) as db:
+        movie = MediaSubscription(tmdb_id=603, type=MediaType.MOVIE, title="Matrix")
+        db.add(movie)
+        db.commit()
+        db.refresh(movie)
+
+    bad_season = client.post(
+        f"/subscriptions/{subscription_id}/scope",
+        data={"scope_mode": "manual", "season_ids": [999]},
+    )
+    bad_episode = client.post(
+        f"/subscriptions/{subscription_id}/scope",
+        data={"scope_mode": "manual", "episode_ids": [999]},
+    )
+    bad_mode = client.post(f"/subscriptions/{subscription_id}/scope", data={"scope_mode": "nope"})
+    not_tv = client.post(f"/subscriptions/{movie.id}/scope", data={"scope_mode": "series"})
+    app.state.tmdb = SeasonsTmdb(error=TmdbError("boom"))
+    failed = client.post(f"/subscriptions/{subscription_id}/scope", data={"scope_mode": "manual"})
+
+    assert (bad_season.status_code, bad_episode.status_code) == (400, 400)
+    assert bad_mode.status_code == 400
+    assert not_tv.status_code == 404
+    assert failed.status_code == 502
+    assert len(_scopes(app, subscription_id)) == 1
+
+
+def test_detail_context_exposes_selection_and_episodes(client, app, captured_templates):
+    app.state.tmdb = SeasonsTmdb()
+    subscription_id = _make_tv(app, with_scope=True)
+    with Session(app.state.engine) as db:
+        db.add(TvSubscriptionScope(
+            subscription_id=subscription_id, tmdb_series_id=1396, tmdb_season_id=20,
+            season_number=2, tmdb_episode_id=202, episode_number=2,
+        ))
+        db.add(TvSubscriptionScope(
+            subscription_id=subscription_id, tmdb_series_id=1396, tmdb_season_id=10, season_number=1
+        ))
+        db.commit()
+
+    assert client.get(f"/subscriptions/{subscription_id}").status_code == 200
+
+    context = captured_templates[-1][1]
+    assert context["series_scope_active"] is True
+    assert context["selected_season_ids"] == {10}
+    assert context["selected_episode_ids"] == {202}
+    assert [e["tmdb_id"] for e in context["seasons"][1]["episodes"]] == [201, 202]
+
+
+def test_auto_download_redirects_to_detail_from_referer_and_bumps_next_check(client, app):
+    subscription_id = _make_tv(app)
+
+    from_detail = client.post(
+        f"/subscriptions/{subscription_id}/auto-download",
+        headers={"referer": f"http://testserver/subscriptions/{subscription_id}"},
+        follow_redirects=False,
+    )
+    assert from_detail.headers["location"] == f"/subscriptions/{subscription_id}"
+    assert _next_check(app, subscription_id).replace(tzinfo=UTC) <= datetime.now(UTC)
+
+    other = client.post(
+        f"/subscriptions/{subscription_id}/auto-download",
+        headers={"referer": "http://evil.example/elsewhere"},
+        follow_redirects=False,
+    )
+    assert other.headers["location"] == "/subscriptions"
+
+
+async def test_series_scope_lets_scan_store_tv_release(session):
+    now = datetime(2026, 9, 3, tzinfo=UTC)
+    subscription = MediaSubscription(
+        tmdb_id=1, type=MediaType.TV, title="Химкинские ведьмы", next_check_at=now
+    )
+    session.add(subscription)
+    session.commit()
+    session.add(TvSubscriptionScope(
+        subscription_id=subscription.id, tmdb_series_id=1, includes_future_content=True
+    ))
+    session.commit()
+
+    await scan_due_subscriptions(
+        session,
+        ScanIndexer([ReleaseResult(
+            "Химкинские ведьмы / S1E1-17 of 17 [2025, WEBRip 1080p]", "fake", 1, 5, 0, "magnet:?x"
+        )]),
+        interval_seconds=60,
+        now=now,
+    )
+
+    releases = session.exec(select(SubscriptionRelease)).all()
+    assert [r.release_title for r in releases] == [
+        "Химкинские ведьмы / S1E1-17 of 17 [2025, WEBRip 1080p]"
+    ]
 
 
 def test_tv_detail_routes_reject_non_tv_missing_and_tmdb_failures(client, app, captured_templates):

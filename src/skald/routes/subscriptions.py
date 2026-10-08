@@ -1,3 +1,6 @@
+import asyncio
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -182,7 +185,7 @@ async def tv_subscription_detail(request: Request, subscription_id: int):
         ).all()
 
     try:
-        seasons = await request.app.state.tmdb.get_tv_seasons(subscription.tmdb_id)
+        seasons = await _load_season_views(request.app.state.tmdb, subscription.tmdb_id)
     except TmdbError as exc:
         return _tmdb_error_page(
             request, exc, back_url=f"/subscriptions/{subscription_id}"
@@ -195,8 +198,109 @@ async def tv_subscription_detail(request: Request, subscription_id: int):
             "subscription": subscription,
             "seasons": seasons,
             "scopes": scopes,
+            "series_scope_active": any(scope.includes_future_content for scope in scopes),
+            "selected_season_ids": {
+                scope.tmdb_season_id
+                for scope in scopes
+                if scope.tmdb_season_id is not None and scope.tmdb_episode_id is None
+            },
+            "selected_episode_ids": {
+                scope.tmdb_episode_id for scope in scopes if scope.tmdb_episode_id is not None
+            },
         },
     )
+
+
+async def _load_season_views(tmdb, tmdb_series_id: int) -> list[dict]:
+    seasons = await tmdb.get_tv_seasons(tmdb_series_id)
+    details = await asyncio.gather(*(
+        tmdb.get_tv_season(tmdb_series_id, season.season_number) for season in seasons
+    ))
+    return [
+        {
+            "tmdb_id": season.tmdb_id,
+            "number": season.season_number,
+            "name": season.name,
+            "episodes": [
+                {"tmdb_id": ep.tmdb_id, "number": ep.episode_number, "name": ep.name}
+                for ep in (detail.episodes if detail is not None else [])
+            ],
+        }
+        for season, detail in zip(seasons, details)
+    ]
+
+
+@router.post("/subscriptions/{subscription_id}/scope")
+async def save_tv_subscription_scope(
+    request: Request,
+    subscription_id: int,
+    scope_mode: str = Form(),
+    season_ids: list[int] = Form(default=[]),
+    episode_ids: list[int] = Form(default=[]),
+):
+    with get_session(request.app.state.engine) as session:
+        subscription = _tv_subscription_or_404(session, subscription_id)
+        series_id = subscription.tmdb_id
+    if scope_mode not in ("series", "manual"):
+        raise HTTPException(status_code=400, detail="Unknown scope mode")
+
+    new_rows: list[TvSubscriptionScope] = []
+    if scope_mode == "series":
+        new_rows.append(TvSubscriptionScope(
+            subscription_id=subscription_id,
+            tmdb_series_id=series_id,
+            includes_future_content=True,
+        ))
+    else:
+        try:
+            seasons = await _load_season_views(request.app.state.tmdb, series_id)
+        except TmdbError as exc:
+            return _tmdb_error_page(
+                request, exc, back_url=f"/subscriptions/{subscription_id}"
+            )
+        season_by_id = {season["tmdb_id"]: season for season in seasons}
+        episode_by_id = {
+            episode["tmdb_id"]: (season, episode)
+            for season in seasons
+            for episode in season["episodes"]
+        }
+        selected_seasons = set(season_ids)
+        selected_episodes = set(episode_ids)
+        if not selected_seasons <= season_by_id.keys() or not selected_episodes <= episode_by_id.keys():
+            raise HTTPException(status_code=400, detail="Unknown season or episode")
+        for season_id in sorted(selected_seasons):
+            season = season_by_id[season_id]
+            new_rows.append(TvSubscriptionScope(
+                subscription_id=subscription_id,
+                tmdb_series_id=series_id,
+                tmdb_season_id=season_id,
+                season_number=season["number"],
+            ))
+        for episode_id in sorted(selected_episodes):
+            season, episode = episode_by_id[episode_id]
+            if season["tmdb_id"] in selected_seasons:
+                continue
+            new_rows.append(TvSubscriptionScope(
+                subscription_id=subscription_id,
+                tmdb_series_id=series_id,
+                tmdb_season_id=season["tmdb_id"],
+                season_number=season["number"],
+                tmdb_episode_id=episode_id,
+                episode_number=episode["number"],
+            ))
+
+    with get_session(request.app.state.engine) as session:
+        subscription = _tv_subscription_or_404(session, subscription_id)
+        session.execute(
+            delete(TvSubscriptionScope).where(
+                TvSubscriptionScope.subscription_id == subscription_id
+            )
+        )
+        session.add_all(new_rows)
+        subscription.next_check_at = _utcnow()
+        session.add(subscription)
+        session.commit()
+    return RedirectResponse(url=f"/subscriptions/{subscription_id}", status_code=303)
 
 
 @router.post("/subscriptions/{subscription_id}/toggle")
@@ -216,9 +320,15 @@ async def toggle_subscription_auto_download(request: Request, subscription_id: i
     with get_session(request.app.state.engine) as session:
         subscription = _subscription_or_404(session, subscription_id)
         subscription.auto_download = not subscription.auto_download
+        if subscription.auto_download:
+            subscription.next_check_at = _utcnow()
         session.add(subscription)
         session.commit()
-    return RedirectResponse(url="/subscriptions", status_code=303)
+    target = "/subscriptions"
+    referer = request.headers.get("referer")
+    if referer and urlparse(referer).path == f"/subscriptions/{subscription_id}":
+        target = f"/subscriptions/{subscription_id}"
+    return RedirectResponse(url=target, status_code=303)
 
 
 @router.post("/subscriptions/{subscription_id}/releases/read")
