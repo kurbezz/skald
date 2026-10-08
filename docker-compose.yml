@@ -27,6 +27,17 @@ services:
       - "9117:9117"
     restart: unless-stopped
 
+  # Solves Cloudflare challenges for Jackett indexers (e.g. rutracker.org).
+  # In Jackett: Dashboard -> FlareSolverr API URL = http://flaresolverr:8191
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    environment:
+      - LOG_LEVEL=info
+      - TZ=Etc/UTC
+    ports:
+      - "8191:8191"
+    restart: unless-stopped
+
   skald:
     build: .
     depends_on:
