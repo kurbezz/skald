@@ -223,12 +223,7 @@ async def scan_due_subscriptions(
     for subscription in due_subscriptions:
         subscription_id = subscription.id
         try:
-            retry_auto_grab = bool(
-                subscription.last_error
-                and subscription.last_error.startswith(_AUTO_GRAB_FAILURE_PREFIX)
-            )
             matching_results: list[ReleaseResult] = []
-            newly_discovered_results: list[ReleaseResult] = []
             candidates_by_fingerprint: dict[str, QualityCandidate] = {}
             created_event_ids: list[int] = []
             profile = profile_provider() if profile_provider is not None else None
@@ -288,7 +283,6 @@ async def scan_due_subscriptions(
                         newly_inserted = False
                     else:
                         stored_release = candidate_release
-                        newly_discovered_results.append(release)
                 if scopes:
                     _persist_release_scope_targets(session, stored_release, scopes)
                     session.flush()
@@ -331,11 +325,13 @@ async def scan_due_subscriptions(
             )
             if durable_subscription is None:
                 continue
-            candidates = newly_discovered_results
-            if retry_auto_grab:
-                # A failed eligible discovery is retryable even though it is
-                # no longer new on the next indexer response.
-                candidates = matching_results
+            # Every matching release is a candidate, not only new ones: the
+            # user may enable auto-download or widen the scope after discovery,
+            # and earlier auto-grab failures must be retryable. Duplicates are
+            # prevented by the gates below (movie: auto_grabbed_release_id;
+            # TV: episodes already covered by jobs/downloaded baselines), and
+            # ``rank`` drops releases the quality profile rejects.
+            candidates = matching_results
             if (
                 durable_subscription.auto_download
                 and (

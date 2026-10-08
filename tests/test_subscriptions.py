@@ -904,6 +904,122 @@ async def test_rescan_with_rotated_download_url_does_not_duplicate_release_event
     assert subscription.auto_grabbed_release_id is not None
 
 
+def _tv_pack_qbit():
+    return SelectiveRecordingQbit([
+        TorrentFile(index=i, name=f"Show.S01E{i:02d}.mkv") for i in range(1, 9)
+    ])
+
+
+def _tv_pack_indexer():
+    return ScanIndexer([
+        ReleaseResult("Show.S01E01-E08.1080p.WEB", "fake", 1, 73, 0, "magnet:?pack", guid="g1"),
+    ])
+
+
+async def _scan(session, indexer, qbit, now):
+    await scan_due_subscriptions(
+        session, indexer, qbit=qbit, settings=Settings(category_tv="tv"),
+        interval_seconds=60, now=now,
+    )
+
+
+async def test_enabling_auto_download_after_discovery_grabs_stored_tv_release(session):
+    now = datetime(2026, 9, 3, tzinfo=UTC)
+    subscription = MediaSubscription(
+        tmdb_id=1, type=MediaType.TV, title="Show", auto_download=False, next_check_at=now
+    )
+    session.add(subscription)
+    session.commit()
+    session.add(TvSubscriptionScope(
+        subscription_id=subscription.id, tmdb_series_id=1, includes_future_content=True
+    ))
+    session.commit()
+    qbit, indexer = _tv_pack_qbit(), _tv_pack_indexer()
+
+    await _scan(session, indexer, qbit, now)
+    assert len(session.exec(select(SubscriptionRelease)).all()) == 1
+    assert session.exec(select(MediaJob)).all() == []
+
+    subscription.auto_download = True
+    subscription.next_check_at = now
+    session.add(subscription)
+    session.commit()
+    await _scan(session, indexer, qbit, now + timedelta(seconds=1))
+
+    jobs = session.exec(select(MediaJob)).all()
+    assert len(jobs) == 1
+    assert len(qbit.paused_add_calls) == 1
+    assert qbit.priority_calls[1][1] == list(range(1, 9))
+    assert len(session.exec(select(SubscriptionRelease)).all()) == 1
+
+
+async def test_scope_change_after_discovery_grabs_tv_release_and_repeat_scans_do_not_regrab(session):
+    now = datetime(2026, 9, 3, tzinfo=UTC)
+    subscription = MediaSubscription(
+        tmdb_id=1, type=MediaType.TV, title="Show", auto_download=True, next_check_at=now
+    )
+    session.add(subscription)
+    session.commit()
+    scope = TvSubscriptionScope(
+        subscription_id=subscription.id, tmdb_series_id=1, tmdb_season_id=20, season_number=2
+    )
+    session.add(scope)
+    session.commit()
+    qbit, indexer = _tv_pack_qbit(), _tv_pack_indexer()
+
+    await _scan(session, indexer, qbit, now)
+    assert qbit.paused_add_calls == []
+
+    session.delete(scope)
+    session.add(TvSubscriptionScope(
+        subscription_id=subscription.id, tmdb_series_id=1, tmdb_season_id=10, season_number=1
+    ))
+    subscription.next_check_at = now
+    session.add(subscription)
+    session.commit()
+    await _scan(session, indexer, qbit, now + timedelta(seconds=1))
+    assert len(qbit.paused_add_calls) == 1
+    assert len(session.exec(select(MediaJob)).all()) == 1
+
+    for step in (2, 3):
+        subscription.next_check_at = now
+        session.add(subscription)
+        session.commit()
+        await _scan(session, indexer, qbit, now + timedelta(seconds=step))
+    assert len(qbit.paused_add_calls) == 1
+    assert len(session.exec(select(MediaJob)).all()) == 1
+
+
+async def test_enabling_auto_download_after_discovery_grabs_movie_once(session):
+    now = datetime(2026, 9, 3, tzinfo=UTC)
+    subscription = MediaSubscription(
+        tmdb_id=603, type=MediaType.MOVIE, title="The Matrix", year=1999,
+        auto_download=False, next_check_at=now,
+    )
+    session.add(subscription)
+    session.commit()
+    qbit = RecordingQbit()
+    indexer = ScanIndexer([
+        ReleaseResult("The.Matrix.1999.1080p.WEB", "fake", 1, 5, 0, "magnet:?matrix")
+    ])
+
+    await _scan(session, indexer, qbit, now)
+    assert qbit.add_calls == []
+
+    subscription.auto_download = True
+    subscription.next_check_at = now
+    session.add(subscription)
+    session.commit()
+    for step in (1, 2):
+        await _scan(session, indexer, qbit, now + timedelta(seconds=step))
+        subscription.next_check_at = now
+        session.add(subscription)
+        session.commit()
+
+    assert qbit.add_calls == [("magnet:?matrix", "skald-movie")]
+    assert len(session.exec(select(MediaJob)).all()) == 1
+
+
 class FakeTmdb:
     def __init__(self, results=None, media=None, seasons=None, season=None, error=None, configured=True):
         self.results = results or []
