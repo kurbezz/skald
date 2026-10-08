@@ -859,6 +859,65 @@ def test_catalog_search_and_create_subscription(client, app, captured_templates)
     )
 
 
+def test_tv_create_redirects_to_detail_and_duplicate_redirects_to_existing(client, app):
+    show = TmdbMedia(1396, MediaType.TV, "Breaking Bad", "Breaking Bad", 2008, None)
+    app.state.tmdb = FakeTmdb(media=show)
+
+    first = client.post(
+        "/subscriptions", data={"tmdb_id": 1396, "media_type": "tv"}, follow_redirects=False
+    )
+    second = client.post(
+        "/subscriptions", data={"tmdb_id": 1396, "media_type": "tv"}, follow_redirects=False
+    )
+
+    with Session(app.state.engine) as database_session:
+        subscription = database_session.exec(select(MediaSubscription)).one()
+    assert first.status_code == second.status_code == 303
+    assert first.headers["location"] == f"/subscriptions/{subscription.id}"
+    assert second.headers["location"] == f"/subscriptions/{subscription.id}"
+
+
+def test_subscription_list_scope_summaries(client, app, captured_templates):
+    def scope(subscription_id, **kwargs):
+        return TvSubscriptionScope(subscription_id=subscription_id, tmdb_series_id=1, **kwargs)
+
+    with Session(app.state.engine) as db:
+        movie = MediaSubscription(tmdb_id=603, type=MediaType.MOVIE, title="Matrix")
+        subs = [
+            MediaSubscription(tmdb_id=10 + i, type=MediaType.TV, title=f"Show {i}")
+            for i in range(6)
+        ]
+        db.add_all([movie, *subs])
+        db.commit()
+        ids = [s.id for s in subs]
+        db.add_all([
+            scope(ids[1], includes_future_content=True),
+            scope(ids[2], tmdb_season_id=1, season_number=0),
+            scope(ids[2], tmdb_season_id=2, season_number=2),
+            scope(ids[3], tmdb_season_id=1, season_number=1),
+            scope(ids[3], tmdb_season_id=3, season_number=3),
+            scope(ids[3], tmdb_season_id=2, season_number=2, tmdb_episode_id=21, episode_number=1),
+            scope(ids[3], tmdb_season_id=2, season_number=2, tmdb_episode_id=22, episode_number=2),
+            scope(ids[3], tmdb_season_id=2, season_number=2, tmdb_episode_id=23, episode_number=3),
+            scope(ids[4], tmdb_season_id=1, season_number=1, tmdb_episode_id=11, episode_number=1),
+            scope(ids[5], tmdb_season_id=1, season_number=1),
+        ])
+        db.commit()
+        movie_id = movie.id
+
+    client.get("/subscriptions")
+
+    summaries = captured_templates[-1][1]["scope_summaries"]
+    assert movie_id not in summaries
+    assert summaries[ids[0]] == {"state": "none", "label": ""}
+    assert summaries[ids[1]] == {"state": "series", "label": "Entire series"}
+    assert summaries[ids[2]] == {"state": "custom", "label": "Specials, Season 2"}
+    assert summaries[ids[3]] == {"state": "custom", "label": "Seasons 1, 3 · 3 episodes"}
+    assert summaries[ids[4]] == {"state": "custom", "label": "1 episode"}
+    assert summaries[ids[5]] == {"state": "custom", "label": "Season 1"}
+    assert set(summaries) == set(ids)
+
+
 def test_subscriptions_page_renders_catalog_subscription_and_recent_release(client, app):
     matrix = TmdbMedia(603, MediaType.MOVIE, "The Matrix", "The Matrix", 1999, None)
     app.state.tmdb = FakeTmdb(results=[matrix])

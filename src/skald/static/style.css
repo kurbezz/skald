@@ -1603,6 +1603,32 @@ a.logout-link:hover {
   text-decoration: underline;
 }
 
+.subscription-scope-note {
+  max-width: 32ch;
+  overflow-wrap: anywhere;
+}
+
+.subscription-scope-note a {
+  display: inline-block;
+  margin-inline-start: 4px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.subscription-scope-note--missing {
+  padding: 8px 10px;
+  border-left: 2px solid var(--amber);
+  border-radius: var(--radius-sm);
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.subscription-scope-note--missing a {
+  display: block;
+  width: fit-content;
+  margin: 4px 0 0;
+}
+
 @media (max-width: 640px) {
   .topbar-inner,
   .shell {

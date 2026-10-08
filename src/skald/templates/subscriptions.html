@@ -127,7 +127,18 @@
             </form>
           </div>
           {% if subscription.type.value == "tv" %}
-          <p class="subscription-auto-note">Episode scope required before automatic download can run.</p>
+          {% set scope_summary = (scope_summaries | default({})).get(subscription.id) %}
+          {% if scope_summary and scope_summary.state in ["series", "custom"] %}
+          <p class="subscription-auto-note subscription-scope-note">
+            Watching: {{ scope_summary.label }}
+            <a href="/subscriptions/{{ subscription.id }}" aria-label="Edit selected episodes for {{ subscription.title }}">Edit</a>
+          </p>
+          {% else %}
+          <p class="subscription-auto-note subscription-scope-note subscription-scope-note--missing">
+            No episodes selected — releases are ignored.
+            <a href="/subscriptions/{{ subscription.id }}" aria-label="Choose episodes for {{ subscription.title }}">Choose episodes</a>
+          </p>
+          {% endif %}
           {% elif subscription.auto_grabbed_release_id %}
           <p class="subscription-auto-note">One matching release has already been queued.</p>
           {% else %}

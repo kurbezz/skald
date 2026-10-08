@@ -86,6 +86,19 @@ async def list_subscriptions(request: Request, q: str = ""):
             (subscription, unread_counts.get(subscription.id, 0))
             for subscription in subscription_rows
         ]
+        tv_ids = [s.id for s in subscription_rows if s.type is MediaType.TV]
+        scopes_by_subscription: dict[int, list[TvSubscriptionScope]] = {i: [] for i in tv_ids}
+        if tv_ids:
+            for scope in session.exec(
+                select(TvSubscriptionScope).where(
+                    TvSubscriptionScope.subscription_id.in_(tv_ids)
+                )
+            ).all():
+                scopes_by_subscription[scope.subscription_id].append(scope)
+        scope_summaries = {
+            subscription_id: _scope_summary(scopes)
+            for subscription_id, scopes in scopes_by_subscription.items()
+        }
 
     return templates.TemplateResponse(
         request,
@@ -97,8 +110,41 @@ async def list_subscriptions(request: Request, q: str = ""):
             "tmdb_configured": tmdb.configured,
             "subscriptions": subscriptions,
             "releases": releases,
+            "scope_summaries": scope_summaries,
         },
     )
+
+
+def _scope_summary(scopes: list[TvSubscriptionScope]) -> dict[str, str]:
+    if not scopes:
+        return {"state": "none", "label": ""}
+    if any(scope.includes_future_content for scope in scopes):
+        return {"state": "series", "label": "Entire series"}
+    season_numbers = sorted({
+        scope.season_number
+        for scope in scopes
+        if scope.episode_number is None and scope.season_number is not None
+    })
+    episode_count = sum(1 for scope in scopes if scope.episode_number is not None)
+    parts = []
+    if season_numbers:
+        parts.append(_join_seasons(season_numbers))
+    if episode_count:
+        parts.append(f"{episode_count} episode{'' if episode_count == 1 else 's'}")
+    return {"state": "custom", "label": " · ".join(parts)}
+
+
+def _join_seasons(season_numbers: list[int]) -> str:
+    """'Specials, Season 2' / 'Seasons 1, 3'."""
+    if 0 in season_numbers:
+        rest = [n for n in season_numbers if n != 0]
+        if not rest:
+            return "Specials"
+        label = f"Season {rest[0]}" if len(rest) == 1 else "Seasons " + ", ".join(map(str, rest))
+        return f"Specials, {label}"
+    if len(season_numbers) == 1:
+        return f"Season {season_numbers[0]}"
+    return "Seasons " + ", ".join(map(str, season_numbers))
 
 
 @router.post("/subscriptions")
@@ -115,12 +161,16 @@ async def create_subscription(
     if media is None or media.tmdb_id != tmdb_id or media.type != media_type:
         raise HTTPException(status_code=404, detail="TMDB media not found")
 
-    with get_session(request.app.state.engine) as session:
-        existing = session.exec(
+    def _find(session):
+        return session.exec(
             select(MediaSubscription)
             .where(MediaSubscription.tmdb_id == tmdb_id)
             .where(MediaSubscription.type == media_type)
         ).first()
+
+    subscription_id = None
+    with get_session(request.app.state.engine) as session:
+        existing = _find(session)
         if existing is None:
             session.add(MediaSubscription(
                 tmdb_id=media.tmdb_id,
@@ -135,7 +185,12 @@ async def create_subscription(
             except IntegrityError:
                 # The unique constraint makes simultaneous submissions safe.
                 session.rollback()
+            existing = _find(session)
+        if existing is not None:
+            subscription_id = existing.id
 
+    if media_type is MediaType.TV and subscription_id is not None:
+        return RedirectResponse(url=f"/subscriptions/{subscription_id}", status_code=303)
     return RedirectResponse(url="/subscriptions", status_code=303)
 
 
