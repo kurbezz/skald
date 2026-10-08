@@ -5,6 +5,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from skald.episode_files import AmbiguousEpisodeMarkers, resolve_file_episodes
 from skald.episodes import format_episode_label
 from skald.lifecycle import FileIdentity, file_identity, identity_matches
 
@@ -124,21 +125,13 @@ def build_tv_pack_targets(
     mappings = []
     targets = set()
     for source in video_files:
-        markers = list(EPISODE_MARKER.finditer(source.name))
-        if len(markers) > 1:
-            raise TvPackError(f"Ambiguous episode markers in {source.name}")
-        if markers:
-            season, episode = (int(value) for value in markers[0].groups())
-        elif default_season is not None:
-            episode_only_markers = list(EPISODE_ONLY_MARKER.finditer(source.name))
-            if len(episode_only_markers) > 1:
-                raise TvPackError(f"Ambiguous episode markers in {source.name}")
-            if not episode_only_markers:
-                continue
-            season = default_season
-            episode = int(episode_only_markers[0].group(1))
-        else:
+        try:
+            season, episodes = resolve_file_episodes(str(source), default_season)
+        except AmbiguousEpisodeMarkers as exc:
+            raise TvPackError(str(exc)) from exc
+        if season is None or not episodes:
             continue
+        episode = episodes[0]
         target = tv_target_path(tv_root, series, season, episode, source.suffix)
         if target in targets:
             raise TvPackError(f"Duplicate target path: {target}")

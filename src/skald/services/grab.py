@@ -7,6 +7,7 @@ from sqlmodel import Session
 from skald.config import Settings
 from skald.indexer.base import ReleaseResult
 from skald.models import JobStatus, MediaJob, MediaType
+from skald.episode_files import AmbiguousEpisodeMarkers, resolve_file_episodes
 from skald.parser import parse_release
 
 
@@ -156,9 +157,12 @@ def _add_targeted_tv_torrent(
 
 
 def _file_matches_target_episode(file_name: str, season: int, targets: set[int]) -> bool:
+    # guessit first: it understands multi-episode and other release styles.
     parsed = parse_release(file_name)
-    return (
-        parsed["media_type"] == MediaType.TV.value
-        and parsed["season"] == season
-        and bool(set(parsed["episode_set"]) & targets)
-    )
+    if parsed["media_type"] == MediaType.TV.value and parsed["season"] is not None:
+        return parsed["season"] == season and bool(set(parsed["episode_set"]) & targets)
+    try:
+        file_season, episodes = resolve_file_episodes(file_name, season)
+    except AmbiguousEpisodeMarkers:
+        return False
+    return file_season == season and bool(set(episodes) & targets)
