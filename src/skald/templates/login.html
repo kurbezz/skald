@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Log in — Skald{% endblock %}
+{% block title %}Sign in — Skald{% endblock %}
 {% block content %}
 <div class="login-wrap">
   <form method="post" action="/login" class="panel login-card">
@@ -7,18 +7,20 @@
       <span class="brand-mark">SK</span>
       <span>SKALD</span>
     </div>
+    <h1 class="page-title login-title">Sign in to Skald</h1>
     <p class="page-sub login-sub">Sign in to continue.</p>
 
-    {% if error %}<div class="alert alert-error">Invalid username or password</div>{% endif %}
+    {% if expired %}<div class="alert alert-error" role="alert">Your session expired. Sign in and repeat the action.</div>{% endif %}
+    {% if error %}<div class="alert alert-error" role="alert">Invalid username or password</div>{% endif %}
 
     <input type="hidden" name="next" value="{{ next }}">
     <label class="login-label" for="username">Username</label>
-    <input type="text" id="username" name="username" autocomplete="username" autofocus required>
+    <input type="text" id="username" name="username" autocomplete="username" value="{{ username }}" {% if not username %}autofocus {% endif %}required>
 
     <label class="login-label" for="password">Password</label>
-    <input type="password" id="password" name="password" autocomplete="current-password" required>
+    <input type="password" id="password" name="password" autocomplete="current-password" {% if username %}autofocus {% endif %}required>
 
-    <button type="submit" class="login-submit">Log in</button>
+    <button type="submit" class="login-submit">Sign in</button>
   </form>
 </div>
 {% endblock %}

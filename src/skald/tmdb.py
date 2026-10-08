@@ -2,6 +2,8 @@ import asyncio
 from dataclasses import dataclass
 import random
 import re
+import time
+from collections import OrderedDict
 from typing import Any
 
 import httpx
@@ -13,6 +15,8 @@ TMDB_API_URL = "https://api.themoviedb.org/3"
 MAX_RETRY_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 0.1
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+SEASON_CACHE_TTL_SECONDS = 3600.0
+SEASON_CACHE_MAX_ENTRIES = 256
 
 
 class TmdbError(RuntimeError):
@@ -56,8 +60,20 @@ class TmdbTvSeason:
 
 
 class TmdbClient:
-    def __init__(self, token: str, client: httpx.AsyncClient | None = None):
+    def __init__(
+        self,
+        token: str,
+        client: httpx.AsyncClient | None = None,
+        *,
+        cache_ttl_seconds: float = SEASON_CACHE_TTL_SECONDS,
+        cache_max_entries: int = SEASON_CACHE_MAX_ENTRIES,
+        monotonic=time.monotonic,
+    ):
         self.token = token
+        self._cache_ttl = cache_ttl_seconds
+        self._cache_max = cache_max_entries
+        self._monotonic = monotonic
+        self._cache: OrderedDict[tuple, tuple[float, Any]] = OrderedDict()
         self._owns_client = client is None
         self.client = client or httpx.AsyncClient(base_url=TMDB_API_URL, timeout=10)
         self._configuration_loaded = False
@@ -95,8 +111,39 @@ class TmdbClient:
             return None
         return await self._normalize({**payload, "media_type": media_type.value})
 
+    def _cache_get(self, key: tuple) -> Any | None:
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if expires_at <= self._monotonic():
+            del self._cache[key]
+            return None
+        self._cache.move_to_end(key)
+        return value
+
+    def _cache_put(self, key: tuple, value: Any) -> None:
+        if self._cache_max <= 0 or self._cache_ttl <= 0:
+            return
+        self._cache[key] = (self._monotonic() + self._cache_ttl, value)
+        self._cache.move_to_end(key)
+        while len(self._cache) > self._cache_max:
+            self._cache.popitem(last=False)
+
     async def get_tv_seasons(self, tmdb_id: int) -> list[TmdbSeason]:
-        """Return the season metadata for a TV series, including season zero."""
+        """Return the season metadata for a TV series, including season zero.
+
+        Successful responses are cached in-process; errors never are.
+        """
+        key = ("seasons", tmdb_id)
+        cached = self._cache_get(key)
+        if cached is not None:
+            return list(cached)
+        seasons = await self._fetch_tv_seasons(tmdb_id)
+        self._cache_put(key, tuple(seasons))
+        return seasons
+
+    async def _fetch_tv_seasons(self, tmdb_id: int) -> list[TmdbSeason]:
         response = await self._get(f"/tv/{tmdb_id}", params={"language": "en-US"})
         payload = self._json(response)
         seasons = payload.get("seasons") if isinstance(payload, dict) else None
@@ -105,7 +152,17 @@ class TmdbClient:
         return [season for item in seasons if (season := self._normalize_season(item)) is not None]
 
     async def get_tv_season(self, tmdb_id: int, season_number: int) -> TmdbTvSeason | None:
-        """Return TMDB's authoritative episode list for one TV season."""
+        """Return TMDB's authoritative episode list for one TV season (cached)."""
+        key = ("season", tmdb_id, season_number)
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        season = await self._fetch_tv_season(tmdb_id, season_number)
+        if season is not None:
+            self._cache_put(key, season)
+        return season
+
+    async def _fetch_tv_season(self, tmdb_id: int, season_number: int) -> TmdbTvSeason | None:
         response = await self._get(
             f"/tv/{tmdb_id}/season/{season_number}", params={"language": "en-US"}
         )

@@ -4,26 +4,31 @@
 <div class="page-head">
   <div>
     <h1>Events<span class="accent-dot">.</span></h1>
-    <p class="page-sub">A read-only history of release matches, upgrade suggestions, and delivery results.</p>
+    <p class="page-sub">Review release matches, upgrade suggestions, and delivery results.</p>
   </div>
 </div>
+
+<nav class="events-filters" aria-label="Event filters">
+  <a href="{{ toggle_unread_url }}"{% if unread_only %} aria-current="true"{% endif %}>{% if unread_only %}Showing unread only — show all{% else %}Show unread only{% endif %}</a>
+  {% if subscription_id is not none %}<span class="cell-muted">Subscription #{{ subscription_id }}</span> <a href="{{ '/events?unread=1' if unread_only else '/events' }}">Clear subscription filter</a>{% endif %}
+</nav>
 
 {% if event_rows %}
 <div class="panel table-wrap">
   <table>
     <thead>
       <tr>
-        <th>Event</th>
-        <th>Quality</th>
-        <th>Delivery</th>
-        <th>Created</th>
-        <th>Read state</th>
-        <th>Action</th>
+        <th scope="col">Event</th>
+        <th scope="col">Quality</th>
+        <th scope="col">Delivery</th>
+        <th scope="col">Created</th>
+        <th scope="col">Read state</th>
+        <th scope="col">Action</th>
       </tr>
     </thead>
     <tbody>
-      {% for event, release, attempts in event_rows %}
-      <tr>
+      {% for event, release, attempts, before, candidate in event_rows %}
+      <tr id="event-{{ event.id }}">
         <td>
           {% if event.kind.value == "upgrade_proposal" %}
           <span class="badge badge-downloading"><span class="badge-dot" aria-hidden="true"></span>Upgrade proposal</span>
@@ -34,34 +39,36 @@
           <div class="cell-muted">{{ event.body }}</div>
         </td>
         <td class="cell-muted">
-          {% if event.prior_quality_score or event.current_quality_score %}
-          {% if event.prior_quality_score %}<div>Before: {{ event.prior_quality_score | join(' / ') }}</div>{% endif %}
-          {% if event.current_quality_score %}<div>Candidate: {{ event.current_quality_score | join(' / ') }}</div>{% endif %}
+          {% if before or candidate %}
+          {% for key, name in [("resolution", "Resolution"), ("audio", "Audio"), ("hdr", "HDR")] %}
+          <div>{{ name }}: {% if before %}{{ before[key] }}{% else %}—{% endif %} → {% if candidate %}{% if before and before[key] != candidate[key] %}<strong class="quality-changed">{{ candidate[key] }} <span class="visually-hidden">(changed)</span></strong>{% else %}{{ candidate[key] }}{% endif %}{% else %}—{% endif %}</div>
+          {% endfor %}
+          {% if release and release.size_bytes %}<div>Candidate size: {{ "%.1f"|format(release.size_bytes / 1073741824) }} GiB</div>{% endif %}
           {% else %}
-          <span aria-label="No quality comparison">—</span>
+          <span aria-hidden="true">—</span><span class="visually-hidden">No quality comparison</span>
           {% endif %}
         </td>
         <td>
           {% if attempts %}
             {% for attempt in attempts %}
             {% if attempt.outcome.value == "sent" %}
-            <div><span class="badge badge-organized"><span class="badge-dot" aria-hidden="true"></span>{{ attempt.channel.value }} · Sent</span></div>
+            <div><span class="badge badge-organized"><span class="badge-dot" aria-hidden="true"></span>{{ attempt.channel.value }} · Delivered</span></div>
             {% elif attempt.outcome.value == "failed" %}
-            <div><span class="badge badge-failed"><span class="badge-dot" aria-hidden="true"></span>{{ attempt.channel.value }} · Failed</span>{% if attempt.error_summary %}<div class="cell-muted">{{ attempt.error_summary }}</div>{% endif %}</div>
+            <div><span class="badge badge-failed"><span class="badge-dot" aria-hidden="true"></span>{{ attempt.channel.value }} · Failed — {{ attempt.error_summary or "unknown error" }}, not retried automatically</span></div>
             {% else %}
-            <div><span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>{{ attempt.channel.value }} · Skipped</span>{% if attempt.error_summary %}<div class="cell-muted">{{ attempt.error_summary }}</div>{% endif %}</div>
+            <div><span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>{{ attempt.channel.value }} · Skipped — {{ attempt.error_summary or "channel not configured" }}</span></div>
             {% endif %}
             {% endfor %}
           {% else %}
-          <span class="cell-muted">Not delivered</span>
+          <span class="cell-muted">Not attempted</span>
           {% endif %}
         </td>
-        <td class="cell-muted">{{ event.created_at }}</td>
+        <td class="cell-muted"><time datetime="{{ event.created_at | isodt }}">{{ event.created_at | dt }}</time></td>
         <td>
           {% if event.read_at %}
           <span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>Read</span>
           {% else %}
-          <span class="badge badge-needs_attention"><span class="badge-dot" aria-hidden="true"></span>Unread</span>
+          <span class="badge badge-unread"><span class="badge-dot" aria-hidden="true"></span>Unread</span>
           {% endif %}
         </td>
         <td>
@@ -72,6 +79,7 @@
             {% if not event.read_at %}
             <form method="post" action="/events/{{ event.id }}/read">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="return_to" value="{{ current_url }}">
               <button type="submit" class="btn-quiet" aria-label="Mark {{ event.title }} as read">Mark read</button>
             </form>
             {% endif %}
@@ -82,10 +90,18 @@
     </tbody>
   </table>
 </div>
+{% if newer_url or older_url %}
+<nav class="pagination" aria-label="Events pages">
+  {% if newer_url %}<a href="{{ newer_url }}" rel="prev">Newer</a>{% endif %}
+  <span class="cell-muted">Page {{ page }}</span>
+  {% if older_url %}<a href="{{ older_url }}" rel="next">Older</a>{% endif %}
+</nav>
+{% endif %}
 {% else %}
 <div class="panel empty-state">
   <div class="glyph">—</div>
-  <p>No events yet. Matching releases and upgrade suggestions will appear here.</p>
+  <p>{% if unread_only or subscription_id is not none %}No events match these filters.{% else %}No events yet. Matching releases and upgrade suggestions will appear here.{% endif %}</p>
+  {% if newer_url %}<nav class="pagination" aria-label="Events pages"><a href="{{ newer_url }}" rel="prev">Newer</a></nav>{% endif %}
 </div>
 {% endif %}
 {% endblock %}

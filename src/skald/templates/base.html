@@ -5,34 +5,43 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Skald{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e8a33d'/%3E%3Ctext x='16' y='21' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='16' fill='%231a1206'%3ESK%3C/text%3E%3C/svg%3E">
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="/search">
+      <a class="brand" href="/">
         <span class="brand-mark">SK</span>
         <span>SKALD</span>
       </a>
       {% if request.url.path != "/login" %}
       <nav class="main-nav">
-        <a href="/search" class="{% if request.url.path.startswith('/search') %}active{% endif %}">Search</a>
-        <a href="/jobs" class="{% if request.url.path.startswith('/jobs') %}active{% endif %}">Jobs</a>
-        <a href="/subscriptions" class="{% if request.url.path.startswith('/subscriptions') %}active{% endif %}">Subscriptions</a>
-        <a href="/quality" class="{% if request.url.path.startswith('/quality') %}active{% endif %}">Quality</a>
-        <a href="/events" class="{% if request.url.path.startswith('/events') %}active{% endif %}">Events</a>
+        <a href="/search" class="{% if request.url.path.startswith('/search') %}active{% endif %}"{% if request.url.path.startswith('/search') %} aria-current="page"{% endif %}>Search</a>
+        <a href="/jobs" class="{% if request.url.path.startswith('/jobs') %}active{% endif %}"{% if request.url.path.startswith('/jobs') %} aria-current="page"{% endif %}>Jobs{% if nav_attention_count %} <span class="nav-count"><span aria-hidden="true">{{ nav_attention_count }}</span><span class="visually-hidden">{{ nav_attention_count }} need attention</span></span>{% endif %}</a>
+        <a href="/subscriptions" class="{% if request.url.path.startswith('/subscriptions') %}active{% endif %}"{% if request.url.path.startswith('/subscriptions') %} aria-current="page"{% endif %}>Subscriptions</a>
+        <a href="/quality" class="{% if request.url.path.startswith('/quality') %}active{% endif %}"{% if request.url.path.startswith('/quality') %} aria-current="page"{% endif %}>Quality</a>
+        <a href="/events" class="{% if request.url.path.startswith('/events') %}active{% endif %}"{% if request.url.path.startswith('/events') %} aria-current="page"{% endif %}>Events{% if nav_unread_events %} <span class="nav-count"><span aria-hidden="true">{{ nav_unread_events }}</span><span class="visually-hidden">{{ nav_unread_events }} unread events</span></span>{% endif %}</a>
       </nav>
       {% endif %}
       <div class="topbar-spacer"></div>
-      {% if request.url.path != "/login" %}
-      <a href="/logout" class="logout-link">Log out</a>
+      {% if auth_enabled %}
+      <form method="post" action="/logout" class="logout-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="logout-link">Log out</button>
+      </form>
       {% endif %}
     </div>
   </header>
   <div class="shell">
-    <main>
+    <main id="main" tabindex="-1">
+      {% if flash %}
+      <div class="alert alert-{{ flash.kind }} flash"{% if flash.kind == "error" %} role="alert"{% else %} role="status"{% endif %}>{{ flash.message }}</div>
+      {% endif %}
       {% block content %}{% endblock %}
     </main>
   </div>
+  <script src="/static/confirm.js" defer></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -1,15 +1,17 @@
-export function initializeGrabMetadataReview(root = document) {
-  root.querySelectorAll("[data-grab-review-toggle]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const review = button.closest("[data-grab-review]");
-      const fields = review?.querySelector("[data-grab-review-fields]");
-      if (!fields) return;
-
-      fields.hidden = false;
-      button.setAttribute("aria-expanded", "true");
-      fields.querySelector('[name="title"]')?.focus();
+// Review fields are a native <details> disclosure and work without JS.
+// This module only guards against double submits.
+export function initializeGrabSubmitGuard(root = document) {
+  root.querySelectorAll("[data-grab-form]").forEach((form) => {
+    form.addEventListener("submit", () => {
+      const button = form.querySelector("[data-grab-submit]");
+      if (!button) return;
+      // Disable after the submit event so the button's own form data is unaffected.
+      setTimeout(() => {
+        button.disabled = true;
+        button.textContent = "Adding…";
+      }, 0);
     });
   });
 }
 
-if (typeof document !== "undefined") initializeGrabMetadataReview();
+if (typeof document !== "undefined") initializeGrabSubmitGuard();

@@ -1,8 +1,11 @@
+import base64
+import re
 import time
 from collections.abc import Callable, Sequence
 from typing import Protocol, cast
+from urllib.parse import parse_qs, urlparse
 
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
 from skald.config import Settings
 from skald.indexer.base import ReleaseResult
@@ -42,6 +45,52 @@ class TargetTorrentFileNotFoundError(MediaJobCreationError):
 
 class TorrentMetadataUnavailableError(MediaJobCreationError):
     """A paused torrent did not expose file metadata before polling expired."""
+
+
+_INACTIVE_STATUSES = (
+    JobStatus.ORGANIZED,
+    JobStatus.NEEDS_ATTENTION,
+    JobStatus.FAILED,
+    JobStatus.DELETING,
+)
+
+
+def extract_info_hash(download_url: str) -> str | None:
+    """Return the lowercase hex BitTorrent info hash of a magnet link, if any."""
+    if not download_url.lower().startswith("magnet:"):
+        return None
+    for value in parse_qs(urlparse(download_url).query).get("xt", []):
+        if not value.lower().startswith("urn:btih:"):
+            continue
+        digest = value[len("urn:btih:"):]
+        if re.fullmatch(r"[0-9a-fA-F]{40}", digest):
+            return digest.lower()
+        if re.fullmatch(r"[A-Za-z2-7]{32}", digest):
+            return base64.b32decode(digest.upper()).hex()
+    return None
+
+
+def find_active_job_for_release(
+    session: Session, release_title: str, download_url: str
+) -> MediaJob | None:
+    """Find a non-terminal job already created for this release.
+
+    Matches by info hash when the link carries one, otherwise by release title
+    (jobs do not persist the download URL).
+    """
+    jobs = session.exec(
+        select(MediaJob)
+        .where(col(MediaJob.status).not_in(_INACTIVE_STATUSES))
+        .order_by(col(MediaJob.id).desc())
+    ).all()
+    info_hash = extract_info_hash(download_url)
+    for job in jobs:
+        if info_hash is not None:
+            if job.qbit_hash.lower() == info_hash:
+                return job
+        elif job.release_title == release_title:
+            return job
+    return None
 
 
 def create_media_job(

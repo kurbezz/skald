@@ -1,4 +1,6 @@
 import { normalizeActiveJobsSnapshot } from "./active_jobs_payload.mjs";
+import { bindLiveStatus, createLiveSocket, websocketUrl } from "./live_socket.mjs";
+import { deleteConfirmText } from "./job_confirm.mjs";
 
 (function () {
   const container = document.querySelector("[data-active-jobs]");
@@ -9,13 +11,14 @@ import { normalizeActiveJobsSnapshot } from "./active_jobs_payload.mjs";
   const table = container.querySelector("[data-active-table]");
   const empty = container.querySelector("[data-active-empty]");
   const live = container.querySelector("[data-active-jobs-live]");
-  const activeCount = document.querySelector("[data-active-count]");
-  const completedCount = document.querySelector("[data-completed-count]");
-  const activeTab = document.querySelector('a[href="/jobs?tab=active"]');
+  const queueCount = document.querySelector("[data-queue-count]");
+  const attentionCount = document.querySelector("[data-attention-count]");
+  const historyCount = document.querySelector("[data-history-count]");
+  const queueTab = document.querySelector('a[href="/jobs?tab=queue"]');
   if (!list || !template || !table || !empty) return;
 
   function labelFor(status) {
-    return String(status).replace(/_/g, " ");
+    return status === "completed" ? "downloaded" : String(status).replace(/_/g, " ");
   }
 
   function paddedNumber(value) {
@@ -112,7 +115,10 @@ import { normalizeActiveJobsSnapshot } from "./active_jobs_payload.mjs";
       badge.classList.add(`badge-${status}`);
     }
     if (statusLabel) statusLabel.textContent = labelFor(status);
-    if (deleteForm) deleteForm.action = `/jobs/${id}/delete`;
+    if (deleteForm) {
+      deleteForm.action = `/jobs/${id}/delete`;
+      deleteForm.dataset.confirm = deleteConfirmText(title, status);
+    }
     setProgress(row, title, job.progress);
   }
 
@@ -120,13 +126,22 @@ import { normalizeActiveJobsSnapshot } from "./active_jobs_payload.mjs";
     return template.content.firstElementChild.cloneNode(true);
   }
 
-  function announce(added, removed) {
+  function announce(added, removed, removedReasons) {
     if (!live || (!added.length && !removed.length)) return;
     const parts = [];
-    if (added.length) parts.push(`${added.length} active job${added.length === 1 ? "" : "s"} added.`);
-    if (removed.length) parts.push(`${removed.length} active job${removed.length === 1 ? "" : "s"} removed.`);
+    if (added.length) parts.push(`${added.length} job${added.length === 1 ? "" : "s"} added to the queue.`);
+    removedReasons.forEach((reason) => parts.push(reason));
     live.textContent = parts.join(" ");
   }
+
+  function removalReason(title, historyBefore, historyNow, attentionBefore, attentionNow) {
+    // A rising history count means the job was organized; a rising attention count means it needs you.
+    if (attentionNow > attentionBefore) return `${title} needs attention.`;
+    return historyNow > historyBefore ? `${title} organized.` : `${title} removed.`;
+  }
+
+  let lastHistory = Number(historyCount && historyCount.textContent) || 0;
+  let lastAttention = Number(attentionCount && attentionCount.textContent) || 0;
 
   function reconcile(payload) {
     if (!payload || typeof payload !== "object" || !Array.isArray(payload.jobs)) return;
@@ -136,6 +151,7 @@ import { normalizeActiveJobsSnapshot } from "./active_jobs_payload.mjs";
     );
     const seen = new Set();
     const added = [];
+    const ordered = [];
 
     jobs.forEach((job) => {
       const id = String(job.id);
@@ -145,39 +161,59 @@ import { normalizeActiveJobsSnapshot } from "./active_jobs_payload.mjs";
         added.push(id);
       }
       patchRow(row, job);
-      list.append(row);
+      ordered.push(row);
       seen.add(id);
     });
 
     const removed = [];
+    const removedReasons = [];
+    const historyNow = Number.isFinite(payload.history_count) ? payload.history_count : lastHistory;
+    const attentionNow = Number.isFinite(payload.attention_count) ? payload.attention_count : lastAttention;
     rows.forEach((row, id) => {
       if (!seen.has(id)) {
         const hadFocus = row.contains(document.activeElement);
+        const link = row.querySelector("[data-job-title]");
+        const title = (link && link.textContent) || `Job #${id}`;
         row.remove();
         removed.push(id);
-        if (hadFocus && activeTab) activeTab.focus();
+        removedReasons.push(removalReason(title, lastHistory, historyNow, lastAttention, attentionNow));
+        if (hadFocus && queueTab) queueTab.focus();
       }
     });
 
-    updateCount(activeCount, jobs.length, "active jobs");
-    if (Number.isFinite(payload.completed_count)) {
-      updateCount(completedCount, payload.completed_count, "completed jobs");
-    }
+    // Only touch the DOM order where it actually differs, so focus and
+    // in-progress interactions on untouched rows are preserved.
+    ordered.forEach((row, index) => {
+      if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
+    });
+
+    updateCount(queueCount, jobs.length, "in queue");
+    updateCount(attentionCount, attentionNow, "need attention");
+    updateCount(historyCount, historyNow, "organized");
+    lastAttention = attentionNow;
+    lastHistory = historyNow;
     table.hidden = jobs.length === 0;
     empty.hidden = jobs.length !== 0;
-    announce(added, removed);
+    announce(added, removed, removedReasons);
   }
 
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(`${protocol}//${window.location.host}${container.dataset.wsUrl}`);
-  socket.addEventListener("message", (event) => {
-    let payload;
-    try {
-      payload = normalizeActiveJobsSnapshot(JSON.parse(event.data));
-    } catch (error) {
-      return;
-    }
-    if (!payload) return;
-    reconcile(payload);
+  let live_socket = null;
+  const onState = bindLiveStatus(
+    container.querySelector("[data-live-status]"),
+    () => live_socket && live_socket.retry()
+  );
+  live_socket = createLiveSocket({
+    url: websocketUrl(container.dataset.wsUrl),
+    onState,
+    onMessage(event) {
+      let payload;
+      try {
+        payload = normalizeActiveJobsSnapshot(JSON.parse(event.data));
+      } catch (error) {
+        return;
+      }
+      if (!payload) return;
+      reconcile(payload);
+    },
   });
 })();

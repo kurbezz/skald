@@ -368,3 +368,70 @@ async def test_configured_and_aclose_for_owned_client():
     assert client.configured
     await client.aclose()
     assert client.client.is_closed
+
+
+@respx.mock
+async def test_season_details_are_cached_until_ttl_expires():
+    route = respx.get(f"{TMDB_URL}/tv/1396/season/1").mock(
+        return_value=Response(200, json={
+            "id": 3572, "season_number": 1, "name": "Season 1",
+            "episodes": [{"id": 1, "episode_number": 1, "name": "Pilot"}],
+        })
+    )
+    clock = [1000.0]
+    client = TmdbClient("token", cache_ttl_seconds=60, monotonic=lambda: clock[0])
+
+    first = await client.get_tv_season(1396, 1)
+    second = await client.get_tv_season(1396, 1)
+    assert route.call_count == 1
+    assert first is second
+
+    await client.get_tv_season(1396, 1)  # still a hit
+    clock[0] += 61
+    await client.get_tv_season(1396, 1)
+    assert route.call_count == 2
+    await client.aclose()
+
+
+@respx.mock
+async def test_series_details_are_cached_and_cache_is_bounded():
+    series = respx.get(f"{TMDB_URL}/tv/7").mock(
+        return_value=Response(200, json={"seasons": [
+            {"id": 70, "season_number": 1, "name": "Season 1", "episode_count": 2},
+        ]})
+    )
+    for number in (1, 2, 3):
+        respx.get(f"{TMDB_URL}/tv/7/season/{number}").mock(
+            return_value=Response(200, json={
+                "id": 70 + number, "season_number": number, "name": f"S{number}", "episodes": [],
+            })
+        )
+    client = TmdbClient("token", cache_max_entries=2)
+
+    await client.get_tv_seasons(7)
+    await client.get_tv_seasons(7)
+    assert series.call_count == 1
+
+    await client.get_tv_season(7, 1)
+    await client.get_tv_season(7, 2)  # evicts the oldest entry (series details)
+    assert len(client._cache) == 2
+    await client.get_tv_seasons(7)
+    assert series.call_count == 2
+    await client.aclose()
+
+
+@respx.mock
+async def test_tmdb_errors_and_missing_seasons_are_not_cached():
+    route = respx.get(f"{TMDB_URL}/tv/1396/season/1").mock(side_effect=[
+        Response(404),
+        Response(200, json={"id": 3572, "season_number": 1, "name": "Season 1", "episodes": []}),
+    ])
+    client = TmdbClient("token")
+
+    with pytest.raises(TmdbError):
+        await client.get_tv_season(1396, 1)
+    season = await client.get_tv_season(1396, 1)
+
+    assert season is not None and route.call_count == 2
+    assert len(client._cache) == 1
+    await client.aclose()

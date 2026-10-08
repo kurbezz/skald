@@ -1423,7 +1423,10 @@ async def test_migrate_schema_legacy_pack_database_is_discoverable_without_looku
 
     # Loads every job unconditionally regardless of status; must not raise.
     payload = active_jobs_payload(engine)
-    assert payload["completed_count"] == 1
+    # NEEDS_ATTENTION jobs surface in the attention count, not the queue.
+    assert payload["history_count"] == 0
+    assert payload["attention_count"] == 1
+    assert payload["jobs"] == []
 
 
 async def test_request_job_deletion_leaves_migrated_legacy_unverified_row_untouched(tmp_path):

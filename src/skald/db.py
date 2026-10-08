@@ -484,6 +484,8 @@ def _migrate_schema(engine) -> None:
             )
         if columns and "operation_token" not in column_names:
             connection.exec_driver_sql("ALTER TABLE mediajob ADD COLUMN operation_token VARCHAR")
+        if columns and "hidden_at" not in column_names:
+            connection.exec_driver_sql("ALTER TABLE mediajob ADD COLUMN hidden_at DATETIME")
         if columns and "source_subscription_id" not in column_names:
             connection.exec_driver_sql(
                 "ALTER TABLE mediajob ADD COLUMN source_subscription_id INTEGER "

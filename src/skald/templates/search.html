@@ -8,24 +8,26 @@
   </div>
 </div>
 
-<form method="get" action="/search" class="search-form panel">
-  <input type="text" name="q" value="{{ query }}" placeholder="Search movies or TV shows&hellip;">
-  <select name="type">
+<form method="get" action="/search" class="search-form panel" role="search">
+  <label class="visually-hidden" for="search-q">Search movies or TV shows</label>
+  <input id="search-q" type="text" name="q" value="{{ query }}" placeholder="Search movies or TV shows&hellip;">
+  <label class="visually-hidden" for="search-type">Media type</label>
+  <select id="search-type" name="type">
     <option value="movie" {% if type == "movie" %}selected{% endif %}>Movie</option>
     <option value="tv" {% if type == "tv" %}selected{% endif %}>TV</option>
   </select>
-  <button type="submit">Search</button>
+  <button type="submit" data-pending-label="Searching…">Search</button>
 </form>
 
-{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+{% if error %}<div class="alert alert-error" role="alert">{{ error }}</div>{% endif %}
 
 {% if results %}
 <div class="panel table-wrap">
   <table>
     <thead>
       <tr>
-        <th>Release</th>
-        <th>Indexer</th>
+        <th scope="col">Release</th>
+        <th scope="col">Indexer</th>
         <th scope="col"{% if sort == 'size_bytes' %} aria-sort="{% if direction == 'asc' %}ascending{% else %}descending{% endif %}"{% endif %}>
           <a class="sort-link {% if sort == 'size_bytes' %}is-active{% endif %}"
              href="/search?q={{ query | urlencode }}&amp;type={{ type }}&amp;sort=size_bytes&amp;direction={% if sort == 'size_bytes' and direction == 'desc' %}asc{% else %}desc{% endif %}"
@@ -47,7 +49,7 @@
             Leechers{% if sort == 'leechers' %} <span aria-hidden="true">{% if direction == 'asc' %}↑{% else %}↓{% endif %}</span>{% endif %}
           </a>
         </th>
-        <th>Confirm &amp; Grab</th>
+        <th scope="col">Confirm &amp; Grab</th>
       </tr>
     </thead>
     <tbody>
@@ -55,54 +57,18 @@
       <tr>
         <td><span class="release-title">{{ item.release.title }}</span></td>
         <td class="cell-muted">{{ item.release.indexer }}</td>
-        <td class="cell-muted">{{ (item.release.size_bytes / 1073741824) | round(2) }} GB</td>
+        <td class="cell-muted">{% if item.release.size_bytes and item.release.size_bytes > 0 %}{{ (item.release.size_bytes / 1073741824) | round(2) }} GiB{% else %}—{% endif %}</td>
         <td><span class="seeders">&#9650;{{ item.release.seeders }}</span></td>
         <td><span class="leechers">&#9660;{{ item.release.leechers }}</span></td>
         <td>
-          <form method="post" action="/grab" class="grab-form">
-            <input type="hidden" name="release_title" value="{{ item.release.title }}">
-            <input type="hidden" name="download_url" value="{{ item.release.download_url }}">
-            <input type="hidden" name="media_type" value="{{ type }}">
-            {% if item.needs_review %}
-            {% set review_id = "grab-review-" ~ loop.index0 %}
-            <div class="grab-review" data-grab-review>
-              <span class="grab-review-status">Needs review</span>
-              <button type="button" class="grab-review-toggle" data-grab-review-toggle
-                      aria-expanded="false" aria-controls="{{ review_id }}">Review metadata</button>
-              <div id="{{ review_id }}" class="grab-review-fields" data-grab-review-fields hidden>
-                <input type="text" name="title" value="{{ item.guess.title or '' }}" placeholder="Title" required>
-                <input type="number" name="year" value="{{ item.guess.year or '' }}" placeholder="Year"{% if type == "movie" %} required{% endif %}>
-                {% if type == "tv" %}
-                <input type="number" name="season" value="{{ item.guess.season or '' }}" placeholder="S" required>
-                <input type="number" name="episode" value="{{ item.guess.episode or '' }}" placeholder="E" required>
-                {% if item.episode_set_input %}
-                <input type="text" name="episode_set" value="{{ item.episode_set_input }}" placeholder="Episode set (e.g. 1-6 or 1-3,5)" required>
-                {% endif %}
-                {% endif %}
-                <button type="submit">Grab</button>
-              </div>
-            </div>
-            {% else %}
-            <input type="hidden" name="title" value="{{ item.guess.title or '' }}">
-            <input type="hidden" name="year" value="{{ item.guess.year or '' }}">
-            {% if type == "tv" %}
-            <input type="hidden" name="season" value="{{ item.guess.season or '' }}">
-            <input type="hidden" name="episode" value="{{ item.guess.episode or '' }}">
-            {% if item.episode_set_value %}
-            <input type="hidden" name="episode_set" value="{{ item.episode_set_value }}">
-            <span class="grab-episode-set">{{ item.episode_label }}</span>
-            {% endif %}
-            {% endif %}
-            <button type="submit">Grab</button>
-            {% endif %}
-          </form>
+          {% set index = loop.index0 %}{% include "_grab_row_form.html" %}
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
-{% elif query %}
+{% elif query and not error %}
 <div class="panel empty-state">
   <div class="glyph">&mdash;</div>
   <p>No releases found for &ldquo;{{ query }}&rdquo;.</p>

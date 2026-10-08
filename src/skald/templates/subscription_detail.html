@@ -24,7 +24,7 @@
     <div class="tv-detail-meta">
       {% if subscription.year %}<span>{{ subscription.year }}</span>{% endif %}
       {% if subscription.is_active %}
-      <span class="badge badge-organized"><span class="badge-dot" aria-hidden="true"></span>Watching</span>
+      <span class="badge badge-organized"><span class="badge-dot" aria-hidden="true"></span>Active</span>
       {% else %}
       <span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>Paused</span>
       {% endif %}
@@ -32,7 +32,9 @@
   </div>
   <div class="tv-detail-actions">
     <form method="post" action="/subscriptions/{{ subscription.id }}/toggle">
-      <button type="submit" class="btn-quiet">{% if subscription.is_active %}Pause watching{% else %}Resume watching{% endif %}</button>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="return_to" value="/subscriptions/{{ subscription.id }}">
+      <button type="submit" class="btn-quiet">{% if subscription.is_active %}Pause{% else %}Resume{% endif %}</button>
     </form>
     <a class="btn tv-back-link" href="/subscriptions">Back to subscriptions</a>
   </div>
@@ -42,23 +44,33 @@
 <div class="alert alert-error" role="alert">{{ error }}</div>
 {% endif %}
 
+{% if not has_scope %}
+<div class="alert alert-error" role="{% if setup %}status{% else %}alert{% endif %}">
+  <strong>Setup required.</strong>
+  {% if setup %}Subscription created. {% endif %}Choose which seasons to watch below — until you do, no releases are matched and no notifications are sent.
+</div>
+{% endif %}
+
 <div class="tv-detail-layout">
   <section class="panel tv-scope" aria-labelledby="scope-title">
     <div class="tv-section-heading">
       <div>
         <p class="section-kicker">Release scope</p>
         <h2 id="scope-title">What should Skald watch for?</h2>
-        <p>Choose the whole series, or save a precise set of seasons and episodes.</p>
+        <p>The scope decides which releases match this series, including notifications. Auto-download only acts on matching releases. With no scope, nothing matches.</p>
       </div>
       {% if series_scope_active %}
       <span class="badge badge-organized"><span class="badge-dot" aria-hidden="true"></span>Entire series</span>
-      {% else %}
+      {% elif has_scope %}
       <span class="badge badge-queued"><span class="badge-dot" aria-hidden="true"></span>Custom selection</span>
+      {% else %}
+      <span class="badge badge-needs_attention"><span class="badge-dot" aria-hidden="true"></span>Not configured</span>
       {% endif %}
     </div>
 
     <div class="tv-scope-body">
       <form method="post" action="/subscriptions/{{ subscription.id }}/scope" class="tv-series-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="scope_mode" value="series">
         <div class="tv-series-choice">
           <div class="tv-choice-icon" aria-hidden="true">∞</div>
@@ -72,7 +84,8 @@
 
       <div class="tv-scope-divider"><span>or set a custom scope</span></div>
 
-      <form method="post" action="/subscriptions/{{ subscription.id }}/scope" class="tv-manual-form">
+      <form method="post" action="/subscriptions/{{ subscription.id }}/scope" class="tv-manual-form" data-scope-form data-confirm-empty="Nothing is selected. Saving will clear the scope, so no releases or notifications will match this series. Save anyway?">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="scope_mode" value="manual">
         <div class="tv-manual-intro">
           <div>
@@ -83,44 +96,57 @@
         </div>
 
         {% if seasons %}
+        <input type="hidden" name="lazy" value="1">
         <div class="tv-season-list">
           {% for season in seasons %}
-          <details class="tv-season"{% if season.tmdb_id in selected_season_ids or season.episodes | selectattr('tmdb_id', 'in', selected_episode_ids) | list %} open{% endif %}>
+          <details class="tv-season"{% if season.loaded and (season.tmdb_id in selected_season_ids or season.picked) %} open{% endif %} data-season-number="{{ season.number }}" data-season-url="/subscriptions/{{ subscription.id }}/seasons/{{ season.number }}" data-season-loaded="{{ '1' if season.loaded else '0' }}">
             <summary>
               <span class="tv-season-summary-copy">
                 <span class="tv-season-title">{% if season.number == 0 %}Specials{% else %}{{ season.name or 'Season ' ~ season.number }}{% endif %}</span>
-                <span class="tv-season-count">{{ season.episodes | length }} episode{% if season.episodes | length != 1 %}s{% endif %}</span>
+                <span class="tv-season-count" data-total-count>{{ season.total }} episode{% if season.total != 1 %}s{% endif %}</span>
+                <span class="tv-season-count" data-selected-count aria-live="polite">{% if season.picked %}{{ season.picked }} of {{ season.total }} selected{% endif %}</span>
               </span>
               <span class="tv-disclosure" aria-hidden="true">⌄</span>
             </summary>
             <div class="tv-season-body">
+              {% if season.loaded %}<input type="hidden" name="loaded_season_ids" value="{{ season.tmdb_id }}" data-loaded-marker>{% endif %}
               <label class="tv-check tv-check--season">
                 <input type="checkbox" name="season_ids" value="{{ season.tmdb_id }}"{% if season.tmdb_id in selected_season_ids %} checked{% endif %}>
                 <span class="tv-check-box" aria-hidden="true"></span>
                 <span><strong>All of {% if season.number == 0 %}the specials{% else %}{{ season.name or 'this season' }}{% endif %}</strong><small>Includes season packs and individual episodes.</small></span>
               </label>
-              {% if season.episodes %}
+              {% if season.loaded and season.episodes %}
               <div class="tv-episode-list" role="group" aria-label="Episodes in {{ season.name or 'season ' ~ season.number }}">
                 {% for episode in season.episodes %}
                 <label class="tv-check tv-check--episode">
-                  <input type="checkbox" name="episode_ids" value="{{ episode.tmdb_id }}"{% if episode.tmdb_id in selected_episode_ids %} checked{% endif %}>
+                  <input type="checkbox" name="episode_ids" value="{{ episode.tmdb_id }}"{% if season.tmdb_id in selected_season_ids %} checked disabled aria-describedby="included-{{ season.tmdb_id }}-{{ episode.tmdb_id }}"{% elif episode.tmdb_id in selected_episode_ids %} checked{% endif %}>
                   <span class="tv-check-box" aria-hidden="true"></span>
                   <span class="tv-episode-number">E{{ '%02d' | format(episode.number) }}</span>
-                  <span class="tv-episode-title">{{ episode.name or 'Episode ' ~ episode.number }}</span>
+                  <span class="tv-episode-title">{{ episode.name or 'Episode ' ~ episode.number }}</span><small id="included-{{ season.tmdb_id }}-{{ episode.tmdb_id }}" class="tv-included-note"{% if season.tmdb_id not in selected_season_ids %} hidden{% endif %}>Included by season</small>
                 </label>
                 {% endfor %}
               </div>
-              {% else %}
+              {% elif season.loaded %}
               <p class="tv-season-empty">Episodes for this season are not available yet.</p>
+              {% else %}
+              <div class="tv-episode-list" role="group" aria-label="Episodes in {{ season.name or 'season ' ~ season.number }}" data-episode-list hidden></div>
+              <p class="tv-season-empty episode-load-status" data-episode-status role="status" aria-live="polite"><a href="/subscriptions/{{ subscription.id }}?season={{ season.number }}" data-load-episodes>Load episodes</a></p>
               {% endif %}
             </div>
           </details>
           {% endfor %}
         </div>
+        <div class="tv-manual-footer"><button type="submit">Save selection</button></div>
+        {% elif seasons_error %}
+        <div class="tv-season-empty-state" role="alert">
+          <span aria-hidden="true">—</span>
+          <p>Could not load seasons from TMDB: {{ seasons_error }}. Your saved scope is unchanged and you can still watch the entire series.
+            <a href="/subscriptions/{{ subscription.id }}">Retry</a></p>
+        </div>
         {% else %}
         <div class="tv-season-empty-state">
           <span aria-hidden="true">—</span>
-          <p>Season information is unavailable right now. You can still watch the entire series.</p>
+          <p>No season information is available for this series yet. You can still watch the entire series.</p>
         </div>
         {% endif %}
       </form>
@@ -131,8 +157,10 @@
     <section class="panel tv-auto-card">
       <p class="section-kicker">Automatic downloads</p>
       <h2>{% if subscription.auto_download %}On{% else %}Off{% endif %}</h2>
-      <p>{% if subscription.auto_download %}Matching releases are queued automatically.{% else %}Matching releases stay in Latest releases for you to review.{% endif %}</p>
+      <p>{% if subscription.auto_download %}{% if subscription.type.value == "tv" %}New matching episodes are queued automatically. Episodes that already have a job are skipped.{% else %}The best matching release is queued once.{% endif %}{% else %}Matching releases stay in Latest releases for you to review.{% endif %}</p>
       <form method="post" action="/subscriptions/{{ subscription.id }}/auto-download">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="return_to" value="/subscriptions/{{ subscription.id }}">
         <button type="submit" class="{% if subscription.auto_download %}btn-quiet{% endif %}">{% if subscription.auto_download %}Turn off auto-download{% else %}Turn on auto-download{% endif %}</button>
       </form>
       <p class="tv-auto-note">Uses your <a href="/quality">quality profile</a> after a release matches this scope.</p>
@@ -141,8 +169,8 @@
     <section class="panel tv-detail-status">
       <p class="section-kicker">Check schedule</p>
       <dl>
-        <div><dt>Last check</dt><dd>{{ subscription.last_checked_at or 'Not checked yet' }}</dd></div>
-        <div><dt>Next check</dt><dd>{{ subscription.next_check_at }}</dd></div>
+        <div><dt>Last check</dt><dd>{% if subscription.last_checked_at %}<time datetime="{{ subscription.last_checked_at | isodt }}">{{ subscription.last_checked_at | dt }}</time>{% else %}Not checked yet{% endif %}</dd></div>
+        {% if subscription.is_active %}<div><dt>Next check</dt><dd>{% if subscription.next_check_at %}<time datetime="{{ subscription.next_check_at | isodt }}">{{ subscription.next_check_at | dt }}</time>{% else %}—{% endif %}</dd></div>{% endif %}
       </dl>
       {% if subscription.last_error %}
       <p class="tv-status-error">{{ subscription.last_error }}</p>

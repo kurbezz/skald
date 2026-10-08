@@ -34,7 +34,21 @@ _HDR_ALIASES = {
     "hdr10+": "hdr10plus",
     "hdr10plus": "hdr10plus",
     "dolby vision": "dolby_vision",
+    "dolby_vision": "dolby_vision",
+    "dolby-vision": "dolby_vision",
     "dovi": "dolby_vision",
+    "dv": "dolby_vision",
+}
+# Human labels for canonical values (used by templates to name stored ranks).
+RESOLUTION_LABELS = {"unknown": "Unknown", "480p": "480p", "720p": "720p", "1080p": "1080p", "2160p": "4K (2160p)"}
+AUDIO_LABELS = {"unknown": "Unknown", "stereo": "Stereo", "5.1": "5.1", "7.1": "7.1", "atmos": "Atmos"}
+HDR_LABELS = {
+    "unknown": "Unknown",
+    "sdr": "SDR",
+    "hdr": "HDR",
+    "hdr10": "HDR10",
+    "hdr10plus": "HDR10+",
+    "dolby_vision": "Dolby Vision",
 }
 _RESOLUTION_FIXED_RANK = {"unknown": 0, "480p": 1, "720p": 2, "1080p": 3, "2160p": 4}
 _AUDIO_FIXED_RANK = {"unknown": 0, "stereo": 1, "5.1": 2, "7.1": 3, "atmos": 4}
@@ -227,7 +241,9 @@ class QualityProfileService:
     def _normalized_values(
         self, raw: object, field: str, aliases: Mapping[str, str]
     ) -> list[str]:
-        values = _form_values(raw, field)
+        # Optional preference/allow lists: blank entries (an empty text input
+        # submits [""]) simply mean "nothing selected".
+        values = _form_values(raw, field, drop_blank=True)
         normalized: list[str] = []
         for value in values:
             canonical = aliases.get(value.casefold())
@@ -299,7 +315,19 @@ class QualityProfileService:
         return bands
 
 
-def _form_values(raw: object, field: str) -> list[str]:
+def rank_label_tables() -> tuple[list[str], list[str], list[str]]:
+    """Return label lookups indexed by fixed rank: (resolution, audio, hdr)."""
+    def by_rank(ranks: Mapping[str, int], labels: Mapping[str, str]) -> list[str]:
+        return [labels[name] for name, _ in sorted(ranks.items(), key=lambda item: item[1])]
+
+    return (
+        by_rank(_RESOLUTION_FIXED_RANK, RESOLUTION_LABELS),
+        by_rank(_AUDIO_FIXED_RANK, AUDIO_LABELS),
+        by_rank(_HDR_FIXED_RANK, HDR_LABELS),
+    )
+
+
+def _form_values(raw: object, field: str, *, drop_blank: bool = False) -> list[str]:
     if isinstance(raw, str):
         raw_values: Iterable[object] = [raw]
     elif isinstance(raw, (list, tuple)):
@@ -311,6 +339,8 @@ def _form_values(raw: object, field: str) -> list[str]:
         if not isinstance(raw_value, str):
             raise QualityProfileValidationError(field, "Must contain strings")
         values.extend(value.strip() for value in raw_value.split(","))
+    if drop_blank:
+        values = [value for value in values if value]
     if any(not value for value in values):
         raise QualityProfileValidationError(field, "Values cannot be blank")
     return values

@@ -1,17 +1,39 @@
+import logging
+from urllib.parse import urlsplit
+
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 
 from skald.episodes import format_episode_set_input, serialize_episode_set
 from skald.indexer.torznab import TorznabError
 from skald.parser import parse_release
 
-router = APIRouter()
-templates = Jinja2Templates(directory="src/skald/templates")
+from skald.templating import templates
 
+router = APIRouter()
+
+logger = logging.getLogger(__name__)
+
+MEDIA_TYPES = {"movie", "tv"}
 SORT_FIELDS = {"seeders", "leechers", "size_bytes"}
 SORT_DIRECTIONS = {"asc", "desc"}
+
+
+def describe_indexer_error(exc: httpx.HTTPError, base_url: str = "") -> str:
+    """User-safe indexer failure text; never includes the request URL (holds the API key)."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return (
+            f"Indexer responded with HTTP {exc.response.status_code} "
+            "— check JACKETT_URL / API key"
+        )
+    if isinstance(exc, httpx.TimeoutException):
+        return "Indexer timed out"
+    if isinstance(exc, httpx.ConnectError):
+        parts = urlsplit(base_url)
+        origin = f"{parts.scheme}://{parts.netloc}" if parts.netloc else "the configured address"
+        return f"Could not connect to indexer at {origin}"
+    return "Could not reach indexer"
 
 
 def needs_metadata_review(guess: dict, media_type: str) -> bool:
@@ -36,6 +58,8 @@ async def search(
     sort: str = "seeders",
     direction: str = "desc",
 ):
+    if type not in MEDIA_TYPES:
+        type = "movie"
     if sort not in SORT_FIELDS or direction not in SORT_DIRECTIONS:
         sort, direction = "seeders", "desc"
     results = []
@@ -47,7 +71,8 @@ async def search(
         except TorznabError as exc:
             error = str(exc)
         except httpx.HTTPError as exc:
-            error = f"Could not reach indexer: {exc}"
+            logger.warning("Indexer request failed: %r", exc, exc_info=True)
+            error = describe_indexer_error(exc, getattr(indexer, "base_url", ""))
         else:
             releases = sorted(
                 releases,

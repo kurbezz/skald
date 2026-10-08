@@ -82,6 +82,10 @@ class MediaJob(SQLModel, table=True):
         default=None, foreign_key="subscriptionrelease.id", index=True
     )
     progress: float = Field(default=0.0)
+    # Set when the operator removed a terminal job from the lists ("forget").
+    # The row is kept (hidden) so subscription coverage, upgrade baselines and
+    # the organized-file ledger stay intact.
+    hidden_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 

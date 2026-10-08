@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_job_macros.html" as macros %}
 {% block title %}Jobs — Skald{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -8,59 +9,36 @@
   </div>
 </div>
 
-<div class="tab-bar">
-  <a href="/jobs?tab=active" class="tab-link {% if tab == 'active' %}active{% endif %}">
-    Active <span class="tab-count" {% if tab == "active" %}data-active-count aria-label="{{ active_count }} active jobs"{% endif %}>{{ active_count }}</span>
+<nav class="tabs-nav" aria-label="Job lists">
+  <a href="/jobs?tab=queue" class="tab-link{% if tab == 'queue' %} active{% endif %}"{% if tab == 'queue' %} aria-current="page"{% endif %}>
+    Queue <span class="tab-count" data-queue-count aria-label="{{ queue_count }} in queue">{{ queue_count }}</span>
   </a>
-  <a href="/jobs?tab=completed" class="tab-link {% if tab == 'completed' %}active{% endif %}">
-    Completed <span class="tab-count" {% if tab == "active" %}data-completed-count aria-label="{{ completed_count }} completed jobs"{% endif %}>{{ completed_count }}</span>
+  <a href="/jobs?tab=attention" class="tab-link{% if tab == 'attention' %} active{% endif %}"{% if tab == 'attention' %} aria-current="page"{% endif %}>
+    Needs attention <span class="tab-count" data-attention-count aria-label="{{ attention_count }} need attention">{{ attention_count }}</span>
   </a>
-</div>
+  <a href="/jobs?tab=history" class="tab-link{% if tab == 'history' %} active{% endif %}"{% if tab == 'history' %} aria-current="page"{% endif %}>
+    History <span class="tab-count" data-history-count aria-label="{{ history_count }} organized">{{ history_count }}</span>
+  </a>
+</nav>
 
-{% if tab == "active" %}
+{% if tab == "queue" %}
 <section data-active-jobs data-ws-url="/ws/jobs/active">
+  {{ macros.live_status() }}
   <div class="panel table-wrap" data-active-table {% if not jobs %}hidden{% endif %}>
     <table>
       <thead>
         <tr>
-          <th>ID</th>
-          <th>Type</th>
-          <th>Title</th>
-          <th>Status</th>
-          <th>Progress</th>
-          <th>Actions</th>
+          <th scope="col">ID</th>
+          <th scope="col">Type</th>
+          <th scope="col">Title</th>
+          <th scope="col">Status</th>
+          <th scope="col">Progress</th>
+          <th scope="col">Actions</th>
         </tr>
       </thead>
       <tbody data-active-job-list>
         {% for job in jobs %}
-        <tr data-job-row data-job-id="{{ job.id }}" data-job-status="{{ job.status.value }}">
-          <td><span class="job-id" data-job-id-label>#{{ job.id }}</span></td>
-          <td class="cell-muted" data-job-type>{{ job.type.value }}</td>
-          <td>
-            <a class="job-link" data-job-title href="/jobs/{{ job.id }}">{{ job.title }}</a>
-            {% if job.type.value == "tv" %}
-            <div class="cell-muted" data-job-episode>{{ tv_episode_labels[job.id] }}</div>
-            {% endif %}
-          </td>
-          <td>
-            <span class="badge badge-{{ job.status.value }}" data-job-status-badge>
-              <span class="badge-dot" aria-hidden="true"></span><span data-job-status-label>{{ job.status.value.replace('_', ' ') }}</span>
-            </span>
-          </td>
-          <td>
-            <div class="progress-cell" data-job-progress role="progressbar" aria-label="{{ job.title }} download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ (job.progress * 100) | round(0) | int }}" aria-valuetext="{{ (job.progress * 100) | round(0) | int }}%">
-              <div class="progress-track" aria-hidden="true">
-                <div class="progress-fill" data-job-progress-fill style="width: {{ (job.progress * 100) | round(1) }}%"></div>
-              </div>
-              <span class="progress-pct" data-job-progress-text aria-hidden="true">{{ (job.progress * 100) | round(0) | int }}%</span>
-            </div>
-          </td>
-          <td>
-            <form method="post" data-job-delete-form action="/jobs/{{ job.id }}/delete" onsubmit="return confirm('Delete this job and its torrent + files from qBittorrent? This cannot be undone.');">
-              <button type="submit" class="btn-danger">Delete</button>
-            </form>
-          </td>
-        </tr>
+        {{ macros.job_row(job, csrf_token, tv_episode_labels[job.id] if job.type.value == "tv" else "") }}
         {% endfor %}
       </tbody>
     </table>
@@ -68,7 +46,7 @@
 
   <div class="panel empty-state" data-active-empty {% if jobs %}hidden{% endif %}>
     <div class="glyph">&mdash;</div>
-    <p>No active downloads. Grab something from <a class="job-link" href="/search">search</a> to get started.</p>
+    <p>Nothing in the queue. Grab something from <a class="job-link" href="/search">search</a> to get started.</p>
   </div>
 
   <p class="visually-hidden" data-active-jobs-live role="status" aria-live="polite" aria-atomic="true"></p>
@@ -95,30 +73,31 @@
         </div>
       </td>
       <td>
-        <form method="post" data-job-delete-form onsubmit="return confirm('Delete this job and its torrent + files from qBittorrent? This cannot be undone.');">
+        <form method="post" data-job-delete-form data-confirm="">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn-danger">Delete</button>
         </form>
       </td>
     </tr>
   </template>
 </section>
-{% else %}
+{% elif tab == "attention" %}
 {% if jobs %}
 <div class="panel table-wrap">
   <table>
     <thead>
       <tr>
-        <th>ID</th>
-        <th>Type</th>
-        <th>Title</th>
-        <th>Status</th>
-        <th>Progress</th>
-        <th>Actions</th>
+        <th scope="col">ID</th>
+        <th scope="col">Type</th>
+        <th scope="col">Title</th>
+        <th scope="col">Status</th>
+        <th scope="col">Problem</th>
+        <th scope="col">Actions</th>
       </tr>
     </thead>
     <tbody>
       {% for job in jobs %}
-      <tr>
+      <tr data-job-row data-job-id="{{ job.id }}" data-job-status="{{ job.status.value }}">
         <td><span class="job-id">#{{ job.id }}</span></td>
         <td class="cell-muted">{{ job.type.value }}</td>
         <td>
@@ -127,28 +106,11 @@
           <div class="cell-muted">{{ tv_episode_labels[job.id] }}</div>
           {% endif %}
         </td>
-        <td>
-          <span class="badge badge-{{ job.status.value }}">
-            <span class="badge-dot"></span>{{ job.status.value.replace('_', ' ') }}
-          </span>
+        <td>{{ macros.status_badge(job.status.value) }}</td>
+        <td class="cell-muted">
+          {% if error_excerpts[job.id] %}<span data-job-error-excerpt>{{ error_excerpts[job.id] }}</span> {% endif %}<a class="job-link" href="/jobs/{{ job.id }}" aria-label="Open details for {{ job.title }}">Details</a>
         </td>
-        <td>
-          {% if job.status.value == "downloading" %}
-          <div class="progress-cell">
-            <div class="progress-track">
-              <div class="progress-fill" style="width: {{ (job.progress * 100) | round(1) }}%"></div>
-            </div>
-            <span class="progress-pct">{{ (job.progress * 100) | round(0) | int }}%</span>
-          </div>
-          {% else %}
-          <span class="cell-muted">&mdash;</span>
-          {% endif %}
-        </td>
-        <td>
-          <form method="post" action="/jobs/{{ job.id }}/delete" onsubmit="return confirm('Delete this job and its torrent + files from qBittorrent? This cannot be undone.');">
-            <button type="submit" class="btn-danger">Delete</button>
-          </form>
-        </td>
+        <td><div class="job-actions">{{ macros.row_actions(job, csrf_token) }}</div></td>
       </tr>
       {% endfor %}
     </tbody>
@@ -157,11 +119,54 @@
 {% else %}
 <div class="panel empty-state">
   <div class="glyph">&mdash;</div>
-  <p>Nothing completed yet.</p>
+  <p>Nothing needs your attention.</p>
+</div>
+{% endif %}
+{% else %}
+{% if jobs %}
+<div class="panel table-wrap">
+  <table class="table--sticky-title">
+    <thead>
+      <tr>
+        <th scope="col">Title</th>
+        <th scope="col">Type</th>
+        <th scope="col">Finished</th>
+        <th scope="col">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr data-job-row data-job-id="{{ job.id }}" data-job-status="{{ job.status.value }}">
+        <td>
+          <a class="job-link" href="/jobs/{{ job.id }}">{{ job.title }}</a>
+          {% if job.type.value == "tv" %}
+          <div class="cell-muted">{{ tv_episode_labels[job.id] }}</div>
+          {% endif %}
+        </td>
+        <td class="cell-muted">{{ job.type.value }}</td>
+        <td class="cell-muted"><time datetime="{{ job.updated_at | isodt }}">{{ job.updated_at | dt }}</time></td>
+        <td><div class="job-actions">{{ macros.row_actions(job, csrf_token) }}</div></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if newer_url or older_url %}
+<nav class="pagination" aria-label="History pages">
+  {% if newer_url %}<a href="{{ newer_url }}" rel="prev">Newer</a>{% endif %}
+  <span class="cell-muted">Page {{ page }}</span>
+  {% if older_url %}<a href="{{ older_url }}" rel="next">Older</a>{% endif %}
+</nav>
+{% endif %}
+{% else %}
+<div class="panel empty-state">
+  <div class="glyph">&mdash;</div>
+  <p>Nothing organized yet.</p>
+  {% if newer_url %}<nav class="pagination" aria-label="History pages"><a href="{{ newer_url }}" rel="prev">Newer</a></nav>{% endif %}
 </div>
 {% endif %}
 {% endif %}
 {% endblock %}
 {% block scripts %}
-{% if tab == "active" %}<script type="module" src="/static/active_jobs.js"></script>{% endif %}
+{% if tab == "queue" %}<script type="module" src="/static/active_jobs.js"></script>{% endif %}
 {% endblock %}

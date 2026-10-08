@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse
 from sqlmodel import Session, select
 from starlette.testclient import WebSocketDenialResponse
 
+from skald.auth import create_csrf_token
 from skald.indexer.base import ReleaseResult
 from skald.lifecycle import file_identity
 from skald import main as main_module
@@ -16,6 +17,9 @@ from skald.main import create_app
 from skald.models import FileLifecycle, JobStatus, MediaJob, MediaType, OrganizationMode, OrganizedFile
 from skald.routes import jobs as jobs_routes
 from skald.routes import search as search_routes
+
+
+CSRF = {"csrf_token": create_csrf_token(None)}
 
 
 class FakeIndexer:
@@ -108,6 +112,7 @@ def test_search_grab_and_jobs_pages(tmp_path, monkeypatch):
         grab_response = client.post(
             "/grab",
             data={
+                "csrf_token": create_csrf_token(None),
                 "release_title": "The.Matrix.1999.1080p.BluRay.x264-GROUP",
                 "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
                 "media_type": "movie",
@@ -116,22 +121,23 @@ def test_search_grab_and_jobs_pages(tmp_path, monkeypatch):
             },
         )
         assert grab_response.status_code == 200
+        assert grab_response.url.path == "/jobs/1"
 
         jobs_response = client.get("/jobs")
         assert jobs_response.status_code == 200
         assert "The Matrix" in jobs_response.text
 
-        active_response = client.get("/jobs?tab=active")
+        active_response = client.get("/jobs?tab=queue")
         assert active_response.status_code == 200
         assert "The Matrix" in active_response.text
         assert 'data-active-jobs' in active_response.text
         assert 'data-active-job-list' in active_response.text
         assert 'data-active-job-template' in active_response.text
-        assert 'data-active-count' in active_response.text
-        assert 'data-completed-count' in active_response.text
+        assert 'data-queue-count' in active_response.text
+        assert 'data-attention-count' in active_response.text
         assert 'active_jobs.js' in active_response.text
 
-        completed_response = client.get("/jobs?tab=completed")
+        completed_response = client.get("/jobs?tab=history")
         assert completed_response.status_code == 200
         assert "The Matrix" not in completed_response.text
         assert 'data-active-jobs' not in completed_response.text
@@ -154,8 +160,9 @@ def test_search_hides_grab_metadata_when_movie_parse_is_complete(tmp_path, monke
     assert response.status_code == 200
     assert 'name="title" value="The Matrix"' in response.text
     assert 'name="year" value="1999"' in response.text
-    assert "data-grab-review-toggle" not in response.text
-    assert 'type="text" name="title"' not in response.text
+    assert "<details class=\"grab-review\" data-grab-review open" not in response.text
+    assert "Organize as:" in response.text
+    assert "Edit metadata" in response.text
 
 
 def test_search_grabs_complete_tv_parse_without_year(tmp_path, monkeypatch):
@@ -173,7 +180,7 @@ def test_search_grabs_complete_tv_parse_without_year(tmp_path, monkeypatch):
         response = client.get("/search", params={"q": "breaking bad", "type": "tv"})
 
         assert response.status_code == 200
-        assert "data-grab-review-toggle" not in response.text
+        assert "<details class=\"grab-review\" data-grab-review open" not in response.text
         assert 'name="title" value="Breaking Bad"' in response.text
         assert 'name="season" value="1"' in response.text
         assert 'name="episode" value="5"' in response.text
@@ -182,6 +189,7 @@ def test_search_grabs_complete_tv_parse_without_year(tmp_path, monkeypatch):
         grab_response = client.post(
             "/grab",
             data={
+                "csrf_token": create_csrf_token(None),
                 "release_title": "Breaking.Bad.S01E05.720p.HDTV.x264-GROUP",
                 "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
                 "media_type": "tv",
@@ -212,6 +220,7 @@ def test_grab_persists_normalized_tv_episode_set_before_adding_torrent(tmp_path,
         response = client.post(
             "/grab",
             data={
+                "csrf_token": create_csrf_token(None),
                 "release_title": "Show.S01E01-E06.1080p",
                 "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
                 "media_type": "tv",
@@ -252,6 +261,7 @@ def test_grab_rejects_invalid_tv_episode_sets_before_adding_torrent(
         response = client.post(
             "/grab",
             data={
+                "csrf_token": create_csrf_token(None),
                 "release_title": "Show.S01E01-E06.1080p",
                 "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
                 "media_type": "tv",
@@ -264,6 +274,7 @@ def test_grab_rejects_invalid_tv_episode_sets_before_adding_torrent(
         )
 
     assert response.status_code == 422
+    assert "Back to results" in response.text
     assert qbit.add_calls == []
 
 
@@ -277,6 +288,7 @@ def test_grab_rejects_explicitly_empty_tv_episode_set_before_adding_torrent(tmp_
         response = client.post(
             "/grab",
             data={
+                "csrf_token": create_csrf_token(None),
                 "release_title": "Show.S01E01-E06.1080p",
                 "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
                 "media_type": "tv",
@@ -289,6 +301,7 @@ def test_grab_rejects_explicitly_empty_tv_episode_set_before_adding_torrent(tmp_
         )
 
     assert response.status_code == 422
+    assert "Back to results" in response.text
     assert qbit.add_calls == []
 
 
@@ -302,6 +315,7 @@ def test_grab_rejects_episode_sets_supplied_for_movies(tmp_path, monkeypatch):
         response = client.post(
             "/grab",
             data={
+                "csrf_token": create_csrf_token(None),
                 "release_title": "Movie.2024.1080p",
                 "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
                 "media_type": "movie",
@@ -313,6 +327,7 @@ def test_grab_rejects_episode_sets_supplied_for_movies(tmp_path, monkeypatch):
         )
 
     assert response.status_code == 422
+    assert "Back to results" in response.text
     assert qbit.add_calls == []
 
 
@@ -336,11 +351,11 @@ def test_search_renders_complete_tv_multi_episode_metadata(tmp_path, monkeypatch
         response = client.get("/search", params={"q": "black mirror", "type": "tv"})
 
     assert response.status_code == 200
-    assert "data-grab-review-toggle" not in response.text
+    assert "<details class=\"grab-review\" data-grab-review open" not in response.text
     assert 'name="episode" value="1"' in response.text
     assert re.search(
-        r'<input\b[^>]*\btype="hidden"[^>]*\bname="episode_set"[^>]*'
-        r'\bvalue="\[1,2,3,4,5,6\]"[^>]*>',
+        r'<input\b[^>]*\btype="text"[^>]*\bname="episode_set"[^>]*'
+        r'\bvalue="1-6"[^>]*>',
         response.text,
     )
     assert 'name="episode" value="[1, 2, 3, 4, 5, 6]"' not in response.text
@@ -367,7 +382,7 @@ def test_search_renders_multi_episode_set_in_incomplete_review(tmp_path, monkeyp
         response = client.get("/search", params={"q": "black mirror", "type": "tv"})
 
     assert response.status_code == 200
-    assert "data-grab-review-toggle" in response.text
+    assert re.search(r"<details\b[^>]*\bopen\b", response.text)
     assert 'name="episode" value="1"' in response.text
     assert re.search(
         r'<input\b[^>]*\btype="text"[^>]*\bname="episode_set"[^>]*'
@@ -401,6 +416,7 @@ def test_grab_rejects_missing_or_blank_required_metadata(
     monkeypatch.setenv("DB_PATH", str(tmp_path / "invalid-grab-metadata.db"))
     app = create_app()
     metadata = {
+        "csrf_token": create_csrf_token(None),
         "release_title": "Example.Release",
         "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
         "media_type": media_type,
@@ -420,6 +436,7 @@ def test_grab_rejects_missing_or_blank_required_metadata(
         response = client.post("/grab", data=metadata, follow_redirects=False)
 
     assert response.status_code == 422
+    assert "Back to results" in response.text
     assert qbit.add_calls == []
 
 
@@ -455,9 +472,8 @@ def test_search_marks_incomplete_metadata_for_review(
 
     assert response.status_code == 200
     assert "Needs review" in response.text
-    assert "data-grab-review-toggle" in response.text
-    assert 'aria-expanded="false"' in response.text
-    assert "data-grab-review-fields hidden" in response.text
+    assert "<details" in response.text
+    assert re.search(r"<details\b[^>]*\bopen\b", response.text)
     for name in expected_names:
         assert f'name="{name}"' in response.text
     for name in required_names:
@@ -664,7 +680,7 @@ def test_routes_require_auth_when_configured(tmp_path, monkeypatch):
         # Following redirects with no cookie lands on the login page HTML.
         followed = client.get("/jobs", follow_redirects=True)
         assert followed.status_code == 200
-        assert "Log in" in followed.text
+        assert "Sign in" in followed.text
 
         # Wrong credentials -> redirected back to /login with an error, no cookie set.
         wrong_login = client.post(
@@ -691,8 +707,52 @@ def test_routes_require_auth_when_configured(tmp_path, monkeypatch):
         assert authenticated_response.status_code == 200
 
         # Logout clears the cookie and further requests are redirected again.
-        client.get("/logout")
+        assert client.get("/logout").status_code == 405
+        assert client.post("/logout", follow_redirects=False).status_code == 403
+        assert client.get("/jobs", follow_redirects=False).status_code == 200
+
+        from skald.auth import create_csrf_token
+
+        token = create_csrf_token(client.cookies.get("session"))
+        logout = client.post(
+            "/logout", data={"csrf_token": token}, follow_redirects=False
+        )
+        assert logout.status_code == 303
+        assert logout.headers["location"] == "/login"
         assert client.get("/jobs", follow_redirects=False).status_code == 303
+
+
+def test_login_rejects_open_redirect_targets(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "redir.db"))
+    monkeypatch.setenv("AUTH_USERNAME", "testuser")
+    monkeypatch.setenv("AUTH_PASSWORD", "testpass")
+    app = create_app()
+
+    with TestClient(app) as client:
+        for evil in ("https://evil.example", "//evil.example", "/\\evil"):
+            response = client.post(
+                "/login",
+                data={"username": "testuser", "password": "testpass", "next": evil},
+                follow_redirects=False,
+            )
+            assert response.status_code == 303
+            assert response.headers["location"] == "/jobs"
+            client.cookies.clear()
+
+
+def test_auth_redirect_preserves_query_and_handles_expired_post(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "next.db"))
+    monkeypatch.setenv("AUTH_USERNAME", "testuser")
+    monkeypatch.setenv("AUTH_PASSWORD", "testpass")
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.get("/jobs?status=failed&page=2", follow_redirects=False)
+        assert response.headers["location"] == "/login?next=/jobs%3Fstatus%3Dfailed%26page%3D2"
+
+        login_page = client.get("/login?expired=1&next=/jobs")
+        assert "Your session expired" in login_page.text
+        assert "Sign in to Skald" in login_page.text
 
 
 def test_job_websocket_requires_auth_when_configured(tmp_path, monkeypatch):
@@ -743,7 +803,7 @@ def test_job_detail_websocket_streams_status(tmp_path, monkeypatch):
         assert "job_status.js" in detail_response.text
 
 
-def test_job_detail_without_year_shows_only_em_dash_in_metadata(tmp_path, monkeypatch):
+def test_job_detail_without_year_shows_labeled_em_dash_in_metadata(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "no-year.db"))
     app = create_app()
 
@@ -763,8 +823,9 @@ def test_job_detail_without_year_shows_only_em_dash_in_metadata(tmp_path, monkey
         detail_response = client.get(f"/jobs/{job.id}")
 
     assert detail_response.status_code == 200
-    assert '<div class="k">Year</div>' not in detail_response.text
-    assert "—" in unescape(detail_response.text)
+    assert '<div class="k">Year</div>' in detail_response.text
+    year_field = detail_response.text.split('<div class="k">Year</div>', 1)[1]
+    assert unescape(year_field).lstrip().startswith('<div class="v">—</div>')
 
 
 @pytest.mark.parametrize(
@@ -841,8 +902,8 @@ def test_job_lists_render_tv_season_and_episode_labels(tmp_path, monkeypatch):
             session.add(completed_job)
             session.commit()
 
-        active_response = client.get("/jobs?tab=active")
-        completed_response = client.get("/jobs?tab=completed")
+        active_response = client.get("/jobs?tab=queue")
+        completed_response = client.get("/jobs?tab=history")
 
     assert active_response.status_code == 200
     assert 'data-job-episode>S01E01-E03</div>' in active_response.text
@@ -886,7 +947,8 @@ def test_active_jobs_websocket_streams_changed_snapshot(tmp_path, monkeypatch):
                         "progress": 0.25,
                     }
                 ],
-                "completed_count": 0,
+                "attention_count": 0,
+                "history_count": 0,
             }
 
             with Session(app.state.engine) as session:
@@ -895,7 +957,11 @@ def test_active_jobs_websocket_streams_changed_snapshot(tmp_path, monkeypatch):
                 session.add(changed)
                 session.commit()
 
-            assert websocket.receive_json() == {"jobs": [], "completed_count": 1}
+            assert websocket.receive_json() == {
+                "jobs": [],
+                "attention_count": 0,
+                "history_count": 1,
+            }
 
 
 async def test_active_jobs_websocket_stops_polling_after_disconnect(monkeypatch):
@@ -921,14 +987,14 @@ async def test_active_jobs_websocket_stops_polling_after_disconnect(monkeypatch)
     monkeypatch.setattr(
         jobs_routes,
         "active_jobs_payload",
-        lambda engine: {"jobs": [], "completed_count": 0},
+        lambda engine: {"jobs": [], "attention_count": 0, "history_count": 0},
     )
     websocket = DisconnectingWebSocket()
 
     await asyncio.wait_for(jobs_routes.active_jobs_ws(websocket), timeout=0.1)
 
     assert websocket.receive_started.is_set()
-    assert websocket.payloads == [{"jobs": [], "completed_count": 0}]
+    assert websocket.payloads == [{"jobs": [], "attention_count": 0, "history_count": 0}]
 
 
 def test_grab_surfaces_qbittorrent_failure(tmp_path, monkeypatch):
@@ -941,19 +1007,23 @@ def test_grab_surfaces_qbittorrent_failure(tmp_path, monkeypatch):
         response = client.post(
             "/grab",
             data={
+                "csrf_token": create_csrf_token(None),
                 "release_title": "The.Matrix.1999.1080p.BluRay.x264-GROUP",
                 "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
                 "media_type": "movie",
                 "title": "The Matrix",
                 "year": 1999,
+                "return_q": "matrix",
+                "return_type": "movie",
             },
         )
 
         assert response.status_code == 502
         assert "Failed to add torrent" in response.text
+        assert 'href="/search?q=matrix&amp;type=movie"' in response.text
 
-        jobs_response = client.get("/jobs")
-        assert "The Matrix" not in jobs_response.text
+        jobs_response = client.get("/jobs?tab=queue")
+        assert 'data-job-id="1"' not in jobs_response.text
 
 
 def test_delete_job_removes_it(tmp_path, monkeypatch):
@@ -965,6 +1035,7 @@ def test_delete_job_removes_it(tmp_path, monkeypatch):
         client.post(
             "/grab",
             data={
+                "csrf_token": create_csrf_token(None),
                 "release_title": "The.Matrix.1999.1080p.BluRay.x264-GROUP",
                 "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
                 "media_type": "movie",
@@ -973,12 +1044,12 @@ def test_delete_job_removes_it(tmp_path, monkeypatch):
             },
         )
 
-        response = client.post("/jobs/1/delete", follow_redirects=False)
+        response = client.post("/jobs/1/delete", data=CSRF, follow_redirects=False)
 
         assert response.status_code == 303
         assert response.headers["location"] == "/jobs"
-        jobs_response = client.get("/jobs")
-        assert "The Matrix" not in jobs_response.text
+        jobs_response = client.get("/jobs?tab=queue")
+        assert 'data-job-id="1"' not in jobs_response.text
 
 
 def test_delete_job_removes_organized_library_file(tmp_path, monkeypatch):
@@ -1006,13 +1077,13 @@ def test_delete_job_removes_organized_library_file(tmp_path, monkeypatch):
             session.refresh(job)
             job_id = job.id
 
-        response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+        response = client.post(f"/jobs/{job_id}/delete", data=CSRF, follow_redirects=False)
 
         assert response.status_code == 303
         assert not library_file.exists()
         assert not library_file.parent.exists()
         jobs_response = client.get("/jobs")
-        assert "Movie" not in jobs_response.text
+        assert 'data-job-id="%d"' % job_id not in jobs_response.text
 
 
 def test_delete_job_removes_all_recorded_pack_files(tmp_path, monkeypatch):
@@ -1051,7 +1122,7 @@ def test_delete_job_removes_all_recorded_pack_files(tmp_path, monkeypatch):
                 ))
             session.commit()
 
-        response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+        response = client.post(f"/jobs/{job_id}/delete", data=CSRF, follow_redirects=False)
 
     assert response.status_code == 303
     assert not any(path.exists() for path in created)
@@ -1092,7 +1163,7 @@ def test_scalar_delete_commits_deleting_before_library_side_effect(tmp_path, mon
             original_remove(path)
 
         monkeypatch.setattr("skald.worker.remove_organized_file", assert_deletion_intent)
-        response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+        response = client.post(f"/jobs/{job_id}/delete", data=CSRF, follow_redirects=False)
 
     assert response.status_code == 303
     assert qbit_calls == ["hash"]
@@ -1145,7 +1216,7 @@ def test_delete_job_retains_deleting_ledger_when_second_library_file_fails(tmp_p
             return original_cleanup(path, identity)
 
         monkeypatch.setattr("skald.worker.cleanup_owned_file", fail_second_cleanup)
-        response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+        response = client.post(f"/jobs/{job_id}/delete", data=CSRF, follow_redirects=False)
 
     assert response.status_code == 500
     assert qbit_calls == []
@@ -1182,7 +1253,7 @@ def test_delete_job_retains_deleting_ledger_when_qbittorrent_fails(tmp_path, mon
             session.commit()
             job_id = job.id
 
-        response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+        response = client.post(f"/jobs/{job_id}/delete", data=CSRF, follow_redirects=False)
 
     assert response.status_code == 502
     assert not library_file.exists()
@@ -1233,7 +1304,7 @@ def test_retry_rejects_invalid_tv_metadata_without_mutating_job(tmp_path, monkey
             del data[field]
         else:
             data[field] = value
-        response = client.post(f"/jobs/{job_id}/retry", data=data, follow_redirects=False)
+        response = client.post(f"/jobs/{job_id}/retry", data={**data, **CSRF}, follow_redirects=False)
 
     assert response.status_code == 422
     with Session(app.state.engine) as session:
@@ -1275,6 +1346,7 @@ def test_retry_tv_pack_with_residual_ledger_commits_organizing_for_recovery(tmp_
                 "season": 1,
                 "episode": 1,
                 "episode_set": "[6,5,4,3,2,1]",
+                **CSRF,
             },
             follow_redirects=False,
         )
@@ -1296,6 +1368,7 @@ def test_delete_job_surfaces_qbittorrent_failure(tmp_path, monkeypatch):
         client.post(
             "/grab",
             data={
+                "csrf_token": create_csrf_token(None),
                 "release_title": "The.Matrix.1999.1080p.BluRay.x264-GROUP",
                 "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
                 "media_type": "movie",
@@ -1305,7 +1378,7 @@ def test_delete_job_surfaces_qbittorrent_failure(tmp_path, monkeypatch):
         )
         app.state.qbit = FailingQbit()
 
-        response = client.post("/jobs/1/delete")
+        response = client.post("/jobs/1/delete", data=CSRF)
 
         assert response.status_code == 502
         assert "Failed to delete torrent" in response.text
@@ -1358,7 +1431,7 @@ def test_fenced_delete_route_does_nothing_while_job_lock_is_held_elsewhere(tmp_p
 
         with try_job_lock(job_id) as held:
             assert held
-            response = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+            response = client.post(f"/jobs/{job_id}/delete", data=CSRF, follow_redirects=False)
 
         assert response.status_code == 409
         assert "already being updated" in response.text
@@ -1404,7 +1477,7 @@ def test_fenced_retry_route_does_nothing_while_job_lock_is_held_elsewhere(tmp_pa
             assert held
             response = client.post(
                 f"/jobs/{job_id}/retry",
-                data={"title": "Show", "season": 1, "episode": 1},
+                data={"title": "Show", "season": 1, "episode": 1, **CSRF},
                 follow_redirects=False,
             )
 
@@ -1460,7 +1533,7 @@ def test_retry_pack_to_scalar_clears_only_nonlegacy_ledger_rows_atomically(tmp_p
 
         response = client.post(
             f"/jobs/{job_id}/retry",
-            data={"title": "Show", "season": 1, "episode": 1},
+            data={"title": "Show", "season": 1, "episode": 1, **CSRF},
             follow_redirects=False,
         )
 
@@ -1514,7 +1587,7 @@ def test_retry_pack_to_scalar_rolls_back_ledger_mode_and_token_on_commit_failure
         monkeypatch.setattr(Session, "commit", fail_retry_commit)
         response = client.post(
             f"/jobs/{job_id}/retry",
-            data={"title": "Show", "season": 1, "episode": 1},
+            data={"title": "Show", "season": 1, "episode": 1, **CSRF},
             follow_redirects=False,
         )
 
@@ -1525,3 +1598,373 @@ def test_retry_pack_to_scalar_rolls_back_ledger_mode_and_token_on_commit_failure
         assert job.operation_token == "organize-token"
         assert session.get(OrganizedFile, normal_id) is not None
         assert session.get(OrganizedFile, legacy_id) is not None
+
+
+def test_grab_requires_csrf(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "csrf.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        qbit = RecordingQbit()
+        app.state.qbit = qbit
+        response = client.post(
+            "/grab",
+            data={
+                "release_title": "X",
+                "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
+                "media_type": "movie",
+                "title": "X",
+                "year": 2000,
+            },
+        )
+    assert response.status_code == 403
+    assert qbit.add_calls == []
+
+
+def test_search_and_grab_accept_season_zero(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "season0.db"))
+    monkeypatch.setattr(
+        search_routes,
+        "parse_release",
+        lambda _: {"title": "Show", "year": None, "season": 0, "episode": 2},
+    )
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.indexer = FakeIndexer()
+        app.state.qbit = FakeQbit()
+        response = client.get("/search", params={"q": "show", "type": "tv"})
+        assert 'name="season"' in response.text
+        assert re.search(r'name="season"[^>]*value="0"', response.text)
+        assert "S00E02" in response.text
+        assert not re.search(r"<details\b[^>]*\bopen\b", response.text)
+
+        grab = client.post(
+            "/grab",
+            data={
+                "csrf_token": create_csrf_token(None),
+                "release_title": "Show.S00E02",
+                "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
+                "media_type": "tv",
+                "title": "Show",
+                "season": "0",
+                "episode": "2",
+            },
+            follow_redirects=False,
+        )
+    assert grab.status_code == 303
+    with Session(app.state.engine) as session:
+        job = session.exec(select(MediaJob)).one()
+    assert job.season == 0
+    assert grab.headers["location"] == f"/jobs/{job.id}"
+
+
+def test_grab_dedupes_active_release(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "dedupe.db"))
+    app = create_app()
+    data = {
+        "csrf_token": create_csrf_token(None),
+        "release_title": "The.Matrix.1999",
+        "download_url": "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD",
+        "media_type": "movie",
+        "title": "The Matrix",
+        "year": 1999,
+    }
+
+    class HashQbit(RecordingQbit):
+        def add_torrent(self, download_url, category):
+            super().add_torrent(download_url, category)
+            return "aabbccddeeff00112233445566778899aabbccdd"
+
+    with TestClient(app) as client:
+        qbit = HashQbit()
+        app.state.qbit = qbit
+        first = client.post("/grab", data=data, follow_redirects=False)
+        second = client.post("/grab", data=data, follow_redirects=False)
+    assert first.headers["location"] == second.headers["location"] == "/jobs/1"
+    assert len(qbit.add_calls) == 1
+
+
+def test_search_error_does_not_show_empty_state(tmp_path, monkeypatch):
+    class BrokenIndexer:
+        async def search(self, query):
+            raise search_routes.TorznabError("boom")
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "searcherr.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.indexer = BrokenIndexer()
+        response = client.get("/search", params={"q": "x", "type": "movie"})
+    assert "boom" in response.text
+    assert "No releases found" not in response.text
+
+
+def _add_job(app, **kwargs):
+    defaults = dict(
+        type=MediaType.MOVIE, title="Some Movie", year=2020, release_title="Some.Movie.2020",
+        qbit_hash="hash", category="skald-movie",
+    )
+    with Session(app.state.engine) as session:
+        job = MediaJob(**{**defaults, **kwargs})
+        session.add(job)
+        session.commit()
+        return job.id
+
+
+def test_missing_job_detail_renders_404_page(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "missing.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/jobs/999")
+    assert response.status_code == 404
+    assert "Job not found" in response.text
+    assert 'href="/jobs"' in response.text
+
+
+def test_job_detail_includes_job_status_script_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "once.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        job_id = _add_job(app)
+        text = client.get(f"/jobs/{job_id}").text
+    assert text.count("job_status.js") == 1
+
+
+def test_delete_and_retry_require_csrf(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "csrf.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.qbit = FakeQbit()
+        job_id = _add_job(app, status=JobStatus.NEEDS_ATTENTION)
+        assert client.post(f"/jobs/{job_id}/delete").status_code == 403
+        assert client.post(
+            f"/jobs/{job_id}/retry", data={"title": "x", "year": 2020}
+        ).status_code == 403
+        with Session(app.state.engine) as session:
+            assert session.get(MediaJob, job_id) is not None
+
+
+def test_needs_attention_and_failed_get_their_own_tab(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "attention.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        _add_job(app, title="Needs Help", status=JobStatus.NEEDS_ATTENTION, error_message="boom " + "x" * 300)
+        _add_job(app, title="Broken One", status=JobStatus.FAILED, error_message="bad")
+        _add_job(app, title="All Done", status=JobStatus.ORGANIZED)
+        _add_job(app, title="Waiting", status=JobStatus.QUEUED)
+        queue = client.get("/jobs?tab=queue").text
+        attention = client.get("/jobs?tab=attention").text
+        history = client.get("/jobs?tab=history").text
+        with client.websocket_connect("/ws/jobs/active") as websocket:
+            snapshot = websocket.receive_json()
+    assert "Waiting" in queue and "Needs Help" not in queue and "All Done" not in queue
+    assert "Needs Help" in attention and "Broken One" in attention and "All Done" not in attention
+    assert "boom" in attention and "x" * 200 not in attention and "…" in attention
+    assert "All Done" in history and "Needs Help" not in history
+    assert "Finished" in history and "<time" in history
+    assert {j["status"] for j in snapshot["jobs"]} == {"queued"}
+    assert snapshot["attention_count"] == 2 and snapshot["history_count"] == 1
+    assert 'name="csrf_token"' in attention
+    assert "data-confirm=" in attention
+
+
+def test_jobs_default_tab_falls_back_to_attention_when_queue_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "default-tab.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        _add_job(app, title="Stuck", status=JobStatus.FAILED, error_message="bad")
+        only_attention = client.get("/jobs").text
+        _add_job(app, title="Waiting", status=JobStatus.QUEUED)
+        with_queue = client.get("/jobs").text
+    assert "Stuck" in only_attention and 'data-active-jobs' not in only_attention
+    assert "Waiting" in with_queue and "Stuck" not in with_queue
+    assert 'class="nav-count"' in with_queue and "1 need attention" in with_queue
+
+
+def test_history_is_paginated(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "history.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        for index in range(52):
+            _add_job(app, title=f"Done {index:02d}", status=JobStatus.ORGANIZED)
+        first = client.get("/jobs?tab=history").text
+        second = client.get("/jobs?tab=history&page=2").text
+    assert first.count("data-job-row") == 50 and 'rel="next"' in first and 'rel="prev"' not in first
+    assert second.count("data-job-row") == 2 and 'rel="prev"' in second and 'rel="next"' not in second
+
+
+def test_delete_confirm_names_title_and_library_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "confirm.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        job_id = _add_job(app, title="Organized Film", status=JobStatus.ORGANIZED)
+        text = unescape(client.get("/jobs?tab=history").text)
+        detail = unescape(client.get(f"/jobs/{job_id}").text)
+    assert "Organized Film" in text and "organized library files" in text
+    assert "organized library files" in detail
+
+
+def test_detail_recovery_actions_match_failure_origin(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "recovery.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        organize_id = _add_job(app, status=JobStatus.NEEDS_ATTENTION, error_message="exists")
+        failed_id = _add_job(app, status=JobStatus.FAILED, error_message="kaboom")
+        delete_id = _add_job(
+            app, type=MediaType.TV, season=1, episode=1, status=JobStatus.NEEDS_ATTENTION,
+            organization_mode=OrganizationMode.PACK, operation_token="t",
+            error_message="ownership conflict",
+        )
+        with Session(app.state.engine) as session:
+            session.add(OrganizedFile(
+                job_id=delete_id, path="/lib/Show - S01E02.mkv",
+                lifecycle=FileLifecycle.DELETE_REQUESTED, operation_token="t",
+            ))
+            session.commit()
+        organize = client.get(f"/jobs/{organize_id}").text
+        failed = client.get(f"/jobs/{failed_id}").text
+        delete = client.get(f"/jobs/{delete_id}").text
+        blocked = client.post(
+            f"/jobs/{delete_id}/retry",
+            data={"title": "Some", "season": 1, "episode": 1, **CSRF},
+        )
+    assert "Retry Organize" in organize
+    assert "kaboom" in failed and "/retry" in failed
+    assert "Retry delete" in delete and "Retry Organize" not in delete
+    assert "S01E02" in delete and "/lib/Show - S01E02.mkv" in delete
+    assert blocked.status_code == 409
+
+
+def test_detail_shows_download_source_and_library_destination(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "paths.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        job_id = _add_job(
+            app, status=JobStatus.ORGANIZED, content_path="/dl/x", library_path="/lib/x.mkv"
+        )
+        text = client.get(f"/jobs/{job_id}").text
+    assert "Download source" in text and "/dl/x" in text
+    assert "Library destination" in text and "/lib/x.mkv" in text
+
+
+class ForgetQbit(FakeQbit):
+    def __init__(self):
+        self.deleted = []
+
+    def delete_torrent(self, torrent_hash, delete_files=True):
+        self.deleted.append((torrent_hash, delete_files))
+
+
+def test_forget_keeps_files_hides_job_and_keeps_quality_baseline(tmp_path, monkeypatch):
+    from skald.models import DownloadedQuality
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "forget.db"))
+    app = create_app()
+    library_file = tmp_path / "Film (2020).mkv"
+    library_file.write_text("data")
+    with TestClient(app) as client:
+        app.state.qbit = ForgetQbit()
+        job_id = _add_job(
+            app, title="Kept Film", status=JobStatus.ORGANIZED, library_path=str(library_file)
+        )
+        with Session(app.state.engine) as session:
+            session.add(OrganizedFile(job_id=job_id, path=str(library_file)))
+            session.add(DownloadedQuality(
+                media_type=MediaType.MOVIE, target_key="movie:1", media_job_id=job_id,
+                resolution="1080p", audio="stereo", hdr="sdr", score_version="v1",
+                quality_score=[1, 1, 1],
+            ))
+            session.commit()
+        listing = unescape(client.get("/jobs?tab=history").text)
+        assert "Remove from list (keep files)" in listing
+        assert f"/jobs/{job_id}/forget" in listing
+        response = client.post(f"/jobs/{job_id}/forget", data=CSRF, follow_redirects=True)
+        assert response.status_code == 200
+        assert "Removed “Kept Film” from the list. Files were kept." in response.text
+        assert client.get(f"/jobs/{job_id}").status_code == 404
+        history = client.get("/jobs?tab=history").text
+        assert 'data-job-id="%d"' % job_id not in history
+
+    assert library_file.read_text() == "data"
+    assert app.state.qbit.deleted == [("hash", False)]
+    with Session(app.state.engine) as session:
+        assert session.get(MediaJob, job_id) is not None
+        assert session.exec(select(DownloadedQuality)).one().media_job_id == job_id
+        assert session.exec(select(OrganizedFile)).one().path == str(library_file)
+
+
+def test_forget_rejected_for_non_terminal_status_and_needs_csrf(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "forget-409.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.qbit = ForgetQbit()
+        downloading = _add_job(app, status=JobStatus.DOWNLOADING)
+        organized = _add_job(app, status=JobStatus.ORGANIZED, qbit_hash="h2")
+        rejected = client.post(f"/jobs/{downloading}/forget", data=CSRF, follow_redirects=False)
+        no_csrf = client.post(f"/jobs/{organized}/forget", follow_redirects=False)
+    assert rejected.status_code == 409
+    assert no_csrf.status_code == 403
+    assert app.state.qbit.deleted == []
+    with Session(app.state.engine) as session:
+        assert session.get(MediaJob, organized).hidden_at is None
+        assert session.get(MediaJob, downloading).hidden_at is None
+
+
+def test_forget_is_not_offered_for_active_jobs(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "forget-ui.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        job_id = _add_job(app, status=JobStatus.DOWNLOADING)
+        detail = client.get(f"/jobs/{job_id}").text
+        queue = client.get("/jobs?tab=queue").text
+    assert "/forget" not in detail and "/forget" not in queue
+
+
+def test_grab_delete_retry_flash_messages(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "flash-routes.db"))
+    app = create_app()
+    form = {
+        **CSRF,
+        "release_title": "The.Matrix.1999.1080p.BluRay.x264-GROUP",
+        "download_url": "http://indexer.test/matrix.torrent",
+        "media_type": "movie",
+        "title": "The Matrix",
+        "year": 1999,
+    }
+    with TestClient(app) as client:
+        app.state.qbit = FakeQbit()
+        first = client.post("/grab", data=form)
+        again = client.post("/grab", data=form)
+        failed_id = _add_job(app, title="Broken Film", status=JobStatus.FAILED, error_message="x", qbit_hash="b")
+        retry = client.post(
+            f"/jobs/{failed_id}/retry", data={**CSRF, "title": "Broken Film", "year": 2020}
+        )
+        deleted = client.post(f"/jobs/{failed_id}/delete", data=CSRF)
+    assert "Added “The Matrix” to the queue." in first.text
+    assert "This release is already in the queue." in again.text
+    assert "Retrying “Broken Film”." in retry.text
+    assert "Deleted “Broken Film”." in deleted.text
+
+
+def test_forgotten_tv_job_still_counts_as_covered_for_auto_grab(tmp_path, monkeypatch):
+    """Hiding a job keeps its row, so subscription coverage still sees it."""
+    from skald.models import MediaSubscription
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "forget-covered.db"))
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.qbit = ForgetQbit()
+        with Session(app.state.engine) as session:
+            sub = MediaSubscription(type=MediaType.TV, title="Show", tmdb_id=1)
+            session.add(sub)
+            session.commit()
+            sub_id = sub.id
+        job_id = _add_job(
+            app, type=MediaType.TV, season=1, episode=1, status=JobStatus.ORGANIZED,
+            source_subscription_id=sub_id,
+        )
+        assert client.post(f"/jobs/{job_id}/forget", data=CSRF).status_code == 200
+    with Session(app.state.engine) as session:
+        rows = session.exec(
+            select(MediaJob).where(MediaJob.source_subscription_id == sub_id)
+        ).all()
+    assert [(r.season, r.episode) for r in rows] == [(1, 1)]
+    assert rows[0].hidden_at is not None

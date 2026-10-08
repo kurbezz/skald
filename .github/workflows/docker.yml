@@ -24,6 +24,14 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run JS tests
+        run: node --test tests/*.test.mjs
+
   docker:
     needs: test
     runs-on: ubuntu-latest

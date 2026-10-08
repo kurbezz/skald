@@ -1,0 +1,67 @@
+{# Shared job markup. Keep data-* hooks in sync with static/active_jobs.js. #}
+
+{% macro status_badge(status) -%}
+<span class="badge badge-{{ status }}" data-job-status-badge>
+  <span class="badge-dot" aria-hidden="true"></span><span data-job-status-label>{{ "downloaded" if status == "completed" else status.replace('_', ' ') }}</span>
+</span>
+{%- endmacro %}
+
+{% macro progress(job, extra_class="") -%}
+{% set pct = (job.progress * 100) | round(0) | int %}
+<div class="progress-cell {{ extra_class }}" data-job-progress role="progressbar" aria-label="{{ job.title }} download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ pct }}" aria-valuetext="{{ pct }}%">
+  <div class="progress-track" aria-hidden="true">
+    <div class="progress-fill" data-job-progress-fill style="width: {{ (job.progress * 100) | round(1) }}%"></div>
+  </div>
+  <span class="progress-pct" data-job-progress-text aria-hidden="true">{{ pct }}%</span>
+</div>
+{%- endmacro %}
+
+{% macro delete_confirm_text(job) -%}
+Delete “{{ job.title }}”? This permanently removes {% if job.status.value in ("organizing", "organized", "needs_attention", "deleting") %}the torrent, downloaded files, and organized library files{% else %}the torrent and downloaded files{% endif %}. This cannot be undone.
+{%- endmacro %}
+
+{% macro delete_form(job, csrf_token, label="Delete", extra_confirm="") -%}
+<form method="post" data-job-delete-form action="/jobs/{{ job.id }}/delete" data-confirm="{{ delete_confirm_text(job) | trim }}{{ extra_confirm }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" class="btn-danger">{{ label }}</button>
+</form>
+{%- endmacro %}
+
+{% macro forget_confirm_text(job) -%}
+Remove “{{ job.title }}” from the list and qBittorrent? Downloaded files and organized library files will be kept.
+{%- endmacro %}
+
+{% macro forget_form(job, csrf_token) -%}
+<form method="post" class="job-forget-form" action="/jobs/{{ job.id }}/forget" data-confirm="{{ forget_confirm_text(job) | trim }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" class="btn-quiet">Remove from list (keep files)</button>
+</form>
+{%- endmacro %}
+
+{% macro row_actions(job, csrf_token) -%}
+{% if job.status.value in ("organized", "failed", "needs_attention") %}{{ forget_form(job, csrf_token) }}{% endif %}
+{{ delete_form(job, csrf_token) }}
+{%- endmacro %}
+
+{% macro job_row(job, csrf_token, episode_label="", live=False) -%}
+<tr data-job-row data-job-id="{{ job.id }}" data-job-status="{{ job.status.value }}">
+  <td><span class="job-id" data-job-id-label>#{{ job.id }}</span></td>
+  <td class="cell-muted" data-job-type>{{ job.type.value }}</td>
+  <td>
+    <a class="job-link" data-job-title href="/jobs/{{ job.id }}">{{ job.title }}</a>
+    {% if job.type.value == "tv" %}
+    <div class="cell-muted" data-job-episode>{{ episode_label }}</div>
+    {% endif %}
+  </td>
+  <td>{{ status_badge(job.status.value) }}</td>
+  <td>{{ progress(job) }}</td>
+  <td>{{ row_actions(job, csrf_token) }}</td>
+</tr>
+{%- endmacro %}
+
+{% macro live_status() -%}
+<p class="live-status" data-live-status data-live-state="connecting" role="status" aria-live="polite">
+  <span data-live-status-text>Connecting…</span>
+  <button type="button" class="btn-link" data-live-retry hidden>Retry</button>
+</p>
+{%- endmacro %}

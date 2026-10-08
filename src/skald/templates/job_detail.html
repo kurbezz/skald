@@ -1,27 +1,30 @@
 {% extends "base.html" %}
-{% block title %}Job {{ job.id }} — Skald{% endblock %}
+{% import "_job_macros.html" as macros %}
+{% block title %}{{ job.title }} — Skald{% endblock %}
 {% block content %}
-<div class="detail-head" data-job-id="{{ job.id }}" data-job-status="{{ job.status.value }}">
+{% set status = job.status.value %}
+{% set files_list %}{% for p in delete_paths %}
+ • {{ p }}{% endfor %}{% endset %}
+<div class="detail-head" data-job-id="{{ job.id }}" data-job-status="{{ status }}">
   <h1>{{ job.title }}<span class="accent-dot">.</span></h1>
-  <span class="badge badge-{{ job.status.value }}">
-    <span class="badge-dot"></span>{{ job.status.value.replace('_', ' ') }}
-  </span>
-  <form method="post" action="/jobs/{{ job.id }}/delete" onsubmit="return confirm('Delete this job and its torrent + files from qBittorrent? This cannot be undone.');">
-    <button type="submit" class="btn-danger">Delete</button>
-  </form>
+  {{ macros.status_badge(status) }}
+  <div class="job-actions" data-job-actions>
+    {% if can_forget %}{{ macros.forget_form(job, csrf_token) }}{% endif %}
+    {{ macros.delete_form(job, csrf_token, extra_confirm=("\n\nLibrary files that will be removed:" ~ files_list) if job.organization_mode.value == "pack" and delete_paths else "") }}
+  </div>
 </div>
 
-{% if job.status.value == "downloading" %}
-<div class="progress-cell detail-progress">
-  <div class="progress-track">
-    <div class="progress-fill" style="width: {{ (job.progress * 100) | round(1) }}%"></div>
-  </div>
-  <span class="progress-pct">{{ (job.progress * 100) | round(0) | int }}%</span>
-</div>
+{{ macros.live_status() }}
+<div class="alert alert-error" data-job-deleted role="alert" hidden>This job was deleted.</div>
+
+{% if status == "downloading" %}
+{{ macros.progress(job, "detail-progress") }}
 {% endif %}
 
 {% if job.error_message %}
-<div class="alert alert-error">{{ job.error_message }}</div>
+<div class="alert alert-error{% if status == 'failed' %} alert-prominent{% endif %}" data-job-error role="alert">
+  {% if status == "failed" %}<strong>Job failed:</strong> {% endif %}{{ job.error_message }}
+</div>
 {% endif %}
 
 <div class="detail-grid">
@@ -34,8 +37,8 @@
     <div class="v">{{ job.type.value }}</div>
   </div>
   <div class="detail-field">
-    {% if job.year %}
     <div class="k">Year</div>
+    {% if job.year %}
     <div class="v">{{ job.year }}</div>
     {% else %}
     <div class="v">&mdash;</div>
@@ -53,7 +56,7 @@
   </div>
   <div class="detail-field">
     <div class="k">Created</div>
-    <div class="v">{{ job.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+    <div class="v"><time datetime="{{ job.created_at | isodt }}">{{ job.created_at | dt }}</time></div>
   </div>
   <div class="detail-field detail-field--wide">
     <div class="k">Release</div>
@@ -61,16 +64,55 @@
   </div>
   {% if job.content_path %}
   <div class="detail-field detail-field--wide">
-    <div class="k">Content Path</div>
-    <div class="v release-title">{{ job.content_path }}</div>
+    <div class="k">Download source</div>
+    <div class="v release-title" data-job-content-path>{{ job.content_path }}</div>
+  </div>
+  {% endif %}
+  {% if job.library_path %}
+  <div class="detail-field detail-field--wide">
+    <div class="k">Library destination</div>
+    <div class="v release-title">{{ job.library_path }}</div>
+  </div>
+  {% endif %}
+  {% if organized_files %}
+  <div class="detail-field detail-field--wide">
+    <div class="k">Organized files</div>
+    <div class="v">
+      <ul class="organized-files">
+        {% for f in organized_files %}
+        <li>{% if f.episode_label %}<span class="episode-chip">{{ f.episode_label }}</span> {% endif %}<span class="release-title">{{ f.path }}</span>{% if f.lifecycle != "published" %} <span class="cell-muted">({{ f.lifecycle.replace('_', ' ') }})</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </div>
   </div>
   {% endif %}
 </div>
 
-{% if job.status.value == "needs_attention" %}
+<div data-job-recovery>
+{% if delete_origin or status == "deleting" %}
 <div class="panel retry-panel">
-  <h2>Retry Organize</h2>
+  <h2>Retry delete</h2>
+  <p>
+    {% if status == "deleting" %}
+    Deletion of this job is in progress or was interrupted; it is retried automatically, or you can retry it now.
+    {% else %}
+    Deleting this job was blocked (for example by an ownership conflict on a library file), so it was not removed.
+    Resolve the conflict if needed, then retry the delete. Organizing again is not available for this job.
+    {% endif %}
+  </p>
+  <form method="post" action="/jobs/{{ job.id }}/delete" data-confirm="{{ macros.delete_confirm_text(job) | trim }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="btn-danger">Retry delete</button>
+  </form>
+</div>
+{% elif can_retry %}
+<div class="panel retry-panel">
+  <h2>{% if status == "failed" %}Retry job{% else %}Retry Organize{% endif %}</h2>
+  {% if status == "failed" %}
+  <p>This job failed. Correct the metadata if needed and retry, or delete it.</p>
+  {% endif %}
   <form method="post" action="/jobs/{{ job.id }}/retry" class="retry-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Title
       <input type="text" name="title" value="{{ job.title }}" required>
     </label>
@@ -91,11 +133,12 @@
     </label>
     {% endif %}
     {% endif %}
-    <button type="submit">Retry Organize</button>
+    <button type="submit">{% if status == "failed" %}Retry{% else %}Retry Organize{% endif %}</button>
   </form>
 </div>
 {% endif %}
-{% block scripts %}
-<script src="/static/job_status.js" defer></script>
+</div>
 {% endblock %}
+{% block scripts %}
+<script type="module" src="/static/job_status.js"></script>
 {% endblock %}

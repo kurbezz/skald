@@ -45,6 +45,64 @@ def test_require_auth_redirects_when_no_cookie(monkeypatch):
     assert exc_info.value.headers["Location"].startswith("/login")
 
 
+def _conn(method="GET", path="/jobs", query=b"", headers=()):
+    scope = {
+        "type": "http",
+        "method": method,
+        "path": path,
+        "headers": [(k.encode(), v.encode()) for k, v in headers],
+        "query_string": query,
+        "server": ("testserver", 80),
+        "scheme": "http",
+    }
+    return HTTPConnection(scope)
+
+
+@pytest.fixture
+def auth_env(monkeypatch):
+    monkeypatch.setenv("AUTH_USERNAME", "testuser")
+    monkeypatch.setenv("AUTH_PASSWORD", "testpass")
+
+
+def test_safe_next_rejects_unsafe_values():
+    from skald.auth import safe_next
+
+    for bad in ("https://evil.example", "//evil.example", "/\\evil", "evil", "", None, "/a\nb"):
+        assert safe_next(bad) == "/jobs"
+    assert safe_next("/jobs?x=1") == "/jobs?x=1"
+
+
+def test_require_auth_keeps_query_string_in_next(auth_env):
+    with pytest.raises(HTTPException) as exc_info:
+        require_auth(_conn(query=b"status=failed&page=2"))
+
+    assert exc_info.value.headers["Location"] == "/login?next=/jobs%3Fstatus%3Dfailed%26page%3D2"
+
+
+def test_require_auth_post_uses_referer_and_marks_expired(auth_env):
+    conn = _conn(
+        method="POST",
+        path="/jobs/1/retry",
+        headers=[("host", "testserver"), ("referer", "http://testserver/jobs/1?tab=x")],
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        require_auth(conn)
+
+    assert exc_info.value.headers["Location"] == "/login?expired=1&next=/jobs/1%3Ftab%3Dx"
+
+
+def test_require_auth_post_ignores_foreign_referer(auth_env):
+    conn = _conn(
+        method="POST",
+        path="/jobs/1/retry",
+        headers=[("host", "testserver"), ("referer", "https://evil.example/x")],
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        require_auth(conn)
+
+    assert exc_info.value.headers["Location"] == "/login?expired=1&next=/jobs"
+
+
 def test_require_auth_redirects_when_cookie_invalid(monkeypatch):
     monkeypatch.setenv("AUTH_USERNAME", "testuser")
     monkeypatch.setenv("AUTH_PASSWORD", "testpass")

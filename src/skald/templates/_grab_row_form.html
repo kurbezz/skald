@@ -1,0 +1,42 @@
+<form method="post" action="/grab" class="grab-form" data-grab-form>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="release_title" value="{{ item.release.title }}">
+  <input type="hidden" name="download_url" value="{{ item.release.download_url }}">
+  <input type="hidden" name="media_type" value="{{ type }}">
+  <input type="hidden" name="return_q" value="{{ query }}">
+  <input type="hidden" name="return_type" value="{{ type }}">
+  {% set guess = item.guess %}
+  {% set rid = "grab-" ~ index %}
+  {% if item.needs_review %}<span class="grab-review-status">Needs review</span>{% endif %}
+  <p class="grab-organize-as">
+    Organize as:
+    {% if type == "tv" %}
+    <strong>{{ guess.title or "?" }}{% if guess.year is not none %} ({{ guess.year }}){% endif %}</strong>
+    /
+    <strong>{{ guess.title or "?" }}
+      S{% if guess.season is none %}?{% else %}{{ "%02d"|format(guess.season) }}{% endif %}{% if item.episode_label %}{{ item.episode_label }}{% elif guess.episode is none %}E?{% else %}E{{ "%02d"|format(guess.episode) }}{% endif %}</strong>
+    {% else %}
+    <strong>{{ guess.title or "?" }} ({% if guess.year is none %}?{% else %}{{ guess.year }}{% endif %})</strong>
+    {% endif %}
+  </p>
+  <details class="grab-review" data-grab-review{% if item.needs_review %} open{% endif %}>
+    <summary class="grab-review-toggle">Edit metadata</summary>
+    <div class="grab-review-fields">
+      <label class="grab-field" for="{{ rid }}-title"><span>Title</span>
+        <input id="{{ rid }}-title" type="text" name="title" value="{{ guess.title or '' }}" required></label>
+      <label class="grab-field" for="{{ rid }}-year"><span>Year</span>
+        <input id="{{ rid }}-year" type="number" name="year" value="{{ guess.year if guess.year is not none else '' }}"{% if type == "movie" %} required{% endif %}></label>
+      {% if type == "tv" %}
+      <label class="grab-field" for="{{ rid }}-season"><span>Season</span>
+        <input id="{{ rid }}-season" type="number" min="0" name="season" value="{{ guess.season if guess.season is not none else '' }}" required></label>
+      <label class="grab-field" for="{{ rid }}-episode"><span>Episode</span>
+        <input id="{{ rid }}-episode" type="number" name="episode" value="{{ guess.episode if guess.episode is not none else '' }}" required></label>
+      {% if item.episode_set_input %}
+      <label class="grab-field" for="{{ rid }}-episode-set"><span>Episodes (e.g. 1-6 or 1-3,5)</span>
+        <input id="{{ rid }}-episode-set" type="text" name="episode_set" value="{{ item.episode_set_input }}" required></label>
+      {% endif %}
+      {% endif %}
+    </div>
+  </details>
+  <button type="submit" data-grab-submit>Grab</button>
+</form>

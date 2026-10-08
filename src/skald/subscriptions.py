@@ -12,6 +12,8 @@ from sqlmodel import Session, select
 from skald.config import Settings
 from skald.indexer.base import IndexerClient, ReleaseResult
 from skald.models import (
+    DownloadedQuality,
+    MediaJob,
     MediaSubscription,
     MediaType,
     QualityProfile,
@@ -19,7 +21,7 @@ from skald.models import (
     SubscriptionReleaseScope,
     TvSubscriptionScope,
 )
-from skald.episodes import serialize_episode_set
+from skald.episodes import deserialize_episode_set, serialize_episode_set
 from skald.parser import parse_release
 from skald.quality import QualityCandidate, QualityProfileService
 from skald.routes.quality import get_or_create_profile
@@ -336,42 +338,42 @@ async def scan_due_subscriptions(
                 candidates = matching_results
             if (
                 durable_subscription.auto_download
-                and durable_subscription.auto_grabbed_release_id is None
+                and (
+                    durable_subscription.type == MediaType.TV
+                    or durable_subscription.auto_grabbed_release_id is None
+                )
                 and qbit is not None
                 and settings is not None
             ):
                 if durable_subscription.type == MediaType.TV:
-                    # Do not let an unaddressable season-pack notification
-                    # outrank a lower-seeded release whose file targets are
-                    # known. The latter is the only safe selective grab.
-                    candidates = [
-                        release
-                        for release in candidates
-                        if tv_target_episode_numbers(
-                            release.title,
-                            matching_tv_subscription_scopes(
-                                session, durable_subscription, release.title
-                            ),
-                        )
-                    ]
-                ranked_candidates = profile_service.rank(
-                    profile,
-                    (
-                        candidates_by_fingerprint[release_fingerprint(subscription_id, release)]
-                        for release in candidates
-                        if release_fingerprint(subscription_id, release) in candidates_by_fingerprint
-                    ),
-                )
-                if ranked_candidates:
-                    selected_release = ranked_candidates[0].release
-                    created_job = False
-                    selected_row = session.exec(
-                        select(SubscriptionRelease).where(
-                            SubscriptionRelease.fingerprint
-                            == release_fingerprint(subscription_id, selected_release)
-                        )
-                    ).one()
-                    if durable_subscription.type == MediaType.MOVIE:
+                    _auto_grab_tv_episodes(
+                        session,
+                        qbit,
+                        settings,
+                        durable_subscription,
+                        profile,
+                        profile_service,
+                        candidates,
+                        candidates_by_fingerprint,
+                    )
+                else:
+                    ranked_candidates = profile_service.rank(
+                        profile,
+                        (
+                            candidates_by_fingerprint[release_fingerprint(subscription_id, release)]
+                            for release in candidates
+                            if release_fingerprint(subscription_id, release)
+                            in candidates_by_fingerprint
+                        ),
+                    )
+                    if ranked_candidates:
+                        selected_release = ranked_candidates[0].release
+                        selected_row = session.exec(
+                            select(SubscriptionRelease).where(
+                                SubscriptionRelease.fingerprint
+                                == release_fingerprint(subscription_id, selected_release)
+                            )
+                        ).one()
                         create_media_job(
                             session,
                             qbit,
@@ -383,41 +385,8 @@ async def scan_due_subscriptions(
                             source_subscription_release_id=selected_row.id,
                             settings=settings,
                         )
-                        created_job = True
-                    else:
-                        scope_ids = session.exec(
-                            select(SubscriptionReleaseScope.tv_subscription_scope_id).where(
-                                SubscriptionReleaseScope.subscription_release_id == selected_row.id
-                            )
-                        ).all()
-                        selected_scopes = session.exec(
-                            select(TvSubscriptionScope)
-                            .where(TvSubscriptionScope.id.in_(scope_ids))
-                            .order_by(TvSubscriptionScope.id)
-                        ).all()
-                        target_episodes = tv_target_episode_numbers(
-                            selected_release.title, selected_scopes
-                        )
-                        parsed = parse_release(selected_release.title)
-                        if target_episodes:
-                            create_media_job(
-                                session,
-                                qbit,
-                                selected_release,
-                                media_type=MediaType.TV,
-                                title=durable_subscription.title,
-                                season=parsed["season"],
-                                episode=target_episodes[0],
-                                episode_set=serialize_episode_set(target_episodes),
-                                target_episode_numbers=target_episodes,
-                                source_subscription_id=durable_subscription.id,
-                                source_subscription_release_id=selected_row.id,
-                                settings=settings,
-                            )
-                            created_job = True
-                    # The shared service persists only after qBittorrent
-                    # succeeds; mark this subscription consumed afterwards.
-                    if created_job:
+                        # The shared service persists only after qBittorrent
+                        # succeeds; mark this subscription consumed afterwards.
                         durable_subscription.auto_grabbed_release_id = selected_row.id
             session.commit()
         except Exception as exc:  # noqa: BLE001 - isolate each durable subscription scan
@@ -436,6 +405,87 @@ async def scan_due_subscriptions(
             failed_subscription.next_check_at = completed_at + timedelta(seconds=interval_seconds)
             session.add(failed_subscription)
             session.commit()
+
+
+def _auto_grab_tv_episodes(
+    session: Session,
+    qbit: TorrentAdder,
+    settings: Settings,
+    subscription: MediaSubscription,
+    profile: QualityProfile,
+    profile_service: QualityProfileService,
+    candidates: list[ReleaseResult],
+    candidates_by_fingerprint: dict[str, QualityCandidate],
+) -> None:
+    """Grab every addressable target episode that has no job yet, best rank first."""
+    subscription_id = subscription.id
+    covered: set[tuple[int | None, int]] = set()
+    for job in session.exec(
+        select(MediaJob).where(MediaJob.source_subscription_id == subscription_id)
+    ).all():
+        job_episodes = deserialize_episode_set(job.episode_set) or (
+            (job.episode,) if job.episode is not None else ()
+        )
+        covered.update((job.season, number) for number in job_episodes)
+    # Library files outlive removed job rows, so baselines also count as covered.
+    key_prefix = f"tv:tmdb:{subscription.tmdb_id}:season:"
+    for target_key in session.exec(
+        select(DownloadedQuality.target_key)
+        .where(DownloadedQuality.media_type == MediaType.TV)
+        .where(DownloadedQuality.target_key.startswith(key_prefix))
+    ).all():
+        match = re.fullmatch(re.escape(key_prefix) + r"(\d+):episode:(\d+)", target_key)
+        if match:
+            covered.add((int(match.group(1)), int(match.group(2))))
+
+    addressable: list[tuple[ReleaseResult, list[int]]] = []
+    for release in candidates:
+        targets = tv_target_episode_numbers(
+            release.title,
+            matching_tv_subscription_scopes(session, subscription, release.title),
+        )
+        if targets and release_fingerprint(subscription_id, release) in candidates_by_fingerprint:
+            addressable.append((release, list(targets)))
+    targets_by_fingerprint = {
+        release_fingerprint(subscription_id, release): targets for release, targets in addressable
+    }
+    ranked = profile_service.rank(
+        profile,
+        (candidates_by_fingerprint[fp] for fp in targets_by_fingerprint),
+    )
+    for candidate in ranked:
+        release = candidate.release
+        season = parse_release(release.title)["season"]
+        remaining = [
+            number
+            for number in targets_by_fingerprint[candidate.fingerprint]
+            if (season, number) not in covered
+        ]
+        if not remaining:
+            continue
+        row = session.exec(
+            select(SubscriptionRelease).where(SubscriptionRelease.fingerprint == candidate.fingerprint)
+        ).one()
+        # create_media_job commits, so earlier grabs survive a later failure.
+        create_media_job(
+            session,
+            qbit,
+            release,
+            media_type=MediaType.TV,
+            title=subscription.title,
+            season=season,
+            episode=remaining[0],
+            episode_set=serialize_episode_set(remaining),
+            target_episode_numbers=remaining,
+            source_subscription_id=subscription_id,
+            source_subscription_release_id=row.id,
+            settings=settings,
+        )
+        covered.update((season, number) for number in remaining)
+        # Display only; never used as a gate for TV.
+        subscription.auto_grabbed_release_id = row.id
+        session.add(subscription)
+        session.commit()
 
 
 def _scan_error_detail(exc: Exception) -> str:
