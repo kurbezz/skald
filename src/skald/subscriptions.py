@@ -34,11 +34,18 @@ logger = logging.getLogger(__name__)
 
 
 def release_fingerprint(subscription_id: int, release: ReleaseResult) -> str:
+    # Jackett download URLs are re-encrypted on every search, so prefer a
+    # stable identity: info-hash, then indexer guid, then the URL.
+    identity = (
+        (release.info_hash or "").strip().lower()
+        or (release.guid or "").strip()
+        or release.download_url
+    )
     value = "\x1f".join(
         (
             str(subscription_id),
             release.indexer,
-            release.download_url,
+            identity,
             release.title,
             str(release.size_bytes),
         )

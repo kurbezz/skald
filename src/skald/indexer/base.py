@@ -11,6 +11,9 @@ class ReleaseResult:
     leechers: int
     download_url: str
     published_at: str | None = None
+    # Stable identity hints: download URLs from Jackett change on every search.
+    guid: str | None = None
+    info_hash: str | None = None
 
 
 class IndexerClient(ABC):

@@ -33,6 +33,8 @@ def parse_torznab_xml(xml_text: str) -> list[ReleaseResult]:
         # Jackett reports the source tracker via <jackettindexer>; Prowlarr
         # (and Torznab-spec-strict servers) use a torznab:attr instead.
         indexer_name = item.findtext("jackettindexer") or "unknown"
+        guid = (item.findtext("guid") or "").strip() or None
+        info_hash = None
         for attr in item.findall(f"{TORZNAB_NS}attr"):
             name = attr.get("name")
             value = attr.get("value")
@@ -42,6 +44,8 @@ def parse_torznab_xml(xml_text: str) -> list[ReleaseResult]:
                 leechers = int(value)
             elif name == "indexer" and value is not None:
                 indexer_name = value
+            elif name == "infohash" and value and value.strip():
+                info_hash = value.strip().lower()
 
         results.append(
             ReleaseResult(
@@ -52,6 +56,8 @@ def parse_torznab_xml(xml_text: str) -> list[ReleaseResult]:
                 leechers=leechers,
                 download_url=link,
                 published_at=pub_date,
+                guid=guid,
+                info_hash=info_hash,
             )
         )
     return results

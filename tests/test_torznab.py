@@ -46,6 +46,40 @@ def test_parse_torznab_xml_uses_jackettindexer_element():
     assert results[0].indexer == "RuTracker.RU"
 
 
+GUID_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+  <channel>
+    <item>
+      <title>With.Hash.2020.1080p</title>
+      <guid>https://rutracker.org/forum/viewtopic.php?t=1</guid>
+      <link>http://localhost:9117/dl/rutracker/?path=ENC1&amp;file=a</link>
+      <jackettindexer id="rutracker">RuTracker</jackettindexer>
+      <torznab:attr name="infohash" value="AABBCCDDEEFF00112233445566778899AABBCCDD" />
+    </item>
+    <item>
+      <title>No.Hash.2020.1080p</title>
+      <guid>https://rutracker.org/forum/viewtopic.php?t=2</guid>
+      <link>http://localhost:9117/dl/rutracker/?path=ENC2&amp;file=b</link>
+    </item>
+    <item>
+      <title>No.Identity.2020.1080p</title>
+      <link>http://localhost:9117/dl/rutracker/?path=ENC3&amp;file=c</link>
+    </item>
+  </channel>
+</rss>
+"""
+
+
+def test_parse_torznab_xml_extracts_guid_and_infohash():
+    with_hash, no_hash, none = parse_torznab_xml(GUID_XML)
+
+    assert with_hash.guid == "https://rutracker.org/forum/viewtopic.php?t=1"
+    assert with_hash.info_hash == "aabbccddeeff00112233445566778899aabbccdd"
+    assert no_hash.guid == "https://rutracker.org/forum/viewtopic.php?t=2"
+    assert no_hash.info_hash is None
+    assert (none.guid, none.info_hash) == (None, None)
+
+
 def test_parse_torznab_xml_raises_on_error_response():
     with pytest.raises(TorznabError, match="Invalid API Key"):
         parse_torznab_xml(ERROR_XML)
