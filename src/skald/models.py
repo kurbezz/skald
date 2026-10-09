@@ -116,6 +116,10 @@ class MediaSubscription(SQLModel, table=True):
     original_title: Optional[str] = None
     year: Optional[int] = None
     poster_url: Optional[str] = None
+    # Titles used for indexer queries and release matching; NULL until computed.
+    search_titles: Optional[list[str]] = Field(
+        default=None, sa_column=Column(JSON(none_as_null=True), nullable=True)
+    )
     is_active: bool = Field(default=True)
     auto_download: bool = Field(default=False)
     auto_grabbed_release_id: Optional[int] = Field(

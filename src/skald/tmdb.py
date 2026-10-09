@@ -111,6 +111,21 @@ class TmdbClient:
             return None
         return await self._normalize({**payload, "media_type": media_type.value})
 
+    async def get_localized_title(
+        self, tmdb_id: int, media_type: MediaType, language: str
+    ) -> str | None:
+        """Return the movie/TV title TMDB has for ``language`` (e.g. ``ru-RU``)."""
+        if media_type not in (MediaType.MOVIE, MediaType.TV):
+            return None
+        response = await self._get(
+            f"/{media_type.value}/{tmdb_id}", params={"language": language}
+        )
+        payload = self._json(response)
+        if not isinstance(payload, dict):
+            return None
+        title = payload.get("title" if media_type is MediaType.MOVIE else "name")
+        return title.strip() if isinstance(title, str) and title.strip() else None
+
     def _cache_get(self, key: tuple) -> Any | None:
         entry = self._cache.get(key)
         if entry is None:
@@ -335,6 +350,50 @@ class TmdbClient:
             if "w342" in poster_sizes:
                 self._poster_base_url = base_url
             self._configuration_loaded = True
+
+
+async def fetch_localized_titles(
+    client: Any,
+    tmdb_id: int,
+    media_type: MediaType,
+    languages: str,
+    *,
+    ignore_errors: bool = True,
+) -> list[str]:
+    """Fetch localized titles for each comma-separated language.
+
+    With ``ignore_errors`` a failing language is skipped; otherwise the
+    :class:`TmdbError` propagates so callers can retry later.
+    """
+    titles: list[str] = []
+    for language in (part.strip() for part in languages.split(",")):
+        if not language:
+            continue
+        try:
+            title = await client.get_localized_title(tmdb_id, media_type, language)
+        except TmdbError:
+            if ignore_errors:
+                continue
+            raise
+        if title:
+            titles.append(title)
+    return titles
+
+
+def build_search_titles(
+    localized: list[str], original_title: str | None, title: str
+) -> list[str]:
+    """Unique (case-insensitive), order-preserving search titles."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for candidate in (*localized, original_title, title):
+        if not candidate or not candidate.strip():
+            continue
+        key = candidate.strip().casefold()
+        if key not in seen:
+            seen.add(key)
+            result.append(candidate.strip())
+    return result
 
 
 def _is_positive_int(value: Any) -> bool:

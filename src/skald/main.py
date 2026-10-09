@@ -98,6 +98,7 @@ def create_app() -> FastAPI:
                 subscription_check_interval_seconds=settings.subscription_check_interval_seconds,
                 settings=settings,
                 delivery_service=app.state.notification_delivery,
+                tmdb=tmdb_client,
             )
         )
         try:

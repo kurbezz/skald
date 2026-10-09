@@ -114,7 +114,8 @@ async def test_poll_once_scans_subscriptions_without_changing_job_polling(tmp_pa
     calls = []
 
     async def record_scan(
-        session, indexer, *, qbit, settings, profile_provider, delivery_service, interval_seconds, now
+        session, indexer, *, qbit, settings, profile_provider, delivery_service, tmdb,
+        interval_seconds, now
     ):
         calls.append((session, indexer, qbit, settings, profile_provider, delivery_service, interval_seconds, now))
 

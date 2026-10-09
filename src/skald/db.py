@@ -514,6 +514,8 @@ def _migrate_schema(engine) -> None:
             connection.exec_driver_sql(
                 "ALTER TABLE mediasubscription ADD COLUMN auto_download BOOLEAN NOT NULL DEFAULT 0"
             )
+        if subscription_columns and "search_titles" not in subscription_column_names:
+            connection.exec_driver_sql("ALTER TABLE mediasubscription ADD COLUMN search_titles JSON")
         if subscription_columns and "auto_grabbed_release_id" not in subscription_column_names:
             connection.exec_driver_sql(
                 "ALTER TABLE mediasubscription ADD COLUMN auto_grabbed_release_id INTEGER"

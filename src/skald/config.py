@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     worker_poll_interval_seconds: int = 10
     tmdb_read_access_token: str = ""
     subscription_check_interval_seconds: int = 6 * 60 * 60
+    # Comma-separated TMDB languages whose localized titles are also used as
+    # indexer search queries (trackers often index the local title first).
+    tmdb_title_languages: str = "ru-RU"
 
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""

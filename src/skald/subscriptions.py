@@ -28,6 +28,7 @@ from skald.routes.quality import get_or_create_profile
 from skald.services.events import create_release_match, create_upgrade_proposals
 from skald.services.grab import MediaJobCreationError, TorrentAdder, create_media_job
 from skald.services.notifications import NotificationDeliveryService
+from skald.tmdb import TmdbError, build_search_titles, fetch_localized_titles
 
 Clock = datetime | Callable[[], datetime]
 ProfileProvider = Callable[[], QualityProfile | None]
@@ -55,9 +56,68 @@ def release_fingerprint(subscription_id: int, release: ReleaseResult) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+MAX_SEARCH_QUERIES = 3
+
+
+def subscription_titles(subscription: MediaSubscription) -> list[str]:
+    """Titles that identify the subscription (stored list, or a fallback)."""
+    if subscription.search_titles:
+        return build_search_titles(list(subscription.search_titles), None, "")
+    return build_search_titles([], subscription.original_title, subscription.title)
+
+
+def subscription_queries(subscription: MediaSubscription) -> list[str]:
+    """One indexer query per search title. TV: bare title; movie: title + year."""
+    queries = []
+    for title in subscription_titles(subscription)[:MAX_SEARCH_QUERIES]:
+        if subscription.type == MediaType.MOVIE and subscription.year:
+            queries.append(f"{title} {subscription.year}")
+        else:
+            queries.append(title)
+    return queries
+
+
 def subscription_query(subscription: MediaSubscription) -> str:
-    title = subscription.original_title or subscription.title
-    return f"{title} {subscription.year}" if subscription.year else title
+    queries = subscription_queries(subscription)
+    return queries[0] if queries else subscription.title
+
+
+def normalize_title(value: str) -> str:
+    value = value.casefold().replace("ё", "е").replace("&", " and ")
+    return " ".join(re.sub(r"[\W_]+", " ", value).split())
+
+
+_LEADING_BLOCKS = re.compile(r"^(?:\s*[\[(][^\])]*[\])])+")
+_HEAD_END = re.compile(
+    r"[\[(]|\bS\d{1,3}(?:[\s._-]?E\d+)?\b|\b(?:season|сезон)\b", re.IGNORECASE
+)
+_SEASON_TAIL = re.compile(
+    r"[\s:\-–]*\b(?:season|сезон)\s*[\divxlc]+\s*$", re.IGNORECASE
+)
+
+
+def release_candidate_names(release_title: str) -> set[str]:
+    """Normalized names a release title may be known by."""
+    stripped = _LEADING_BLOCKS.sub("", release_title)
+    end = _HEAD_END.search(stripped)
+    head = stripped[: end.start()] if end else stripped
+    names: set[str] = set()
+    for segment in head.split(" / "):
+        segment = _SEASON_TAIL.sub("", segment)
+        normalized = normalize_title(segment)
+        if normalized:
+            names.add(normalized)
+    guessed = parse_release(release_title).get("title")
+    if isinstance(guessed, str) and guessed.strip():
+        names.add(normalize_title(_SEASON_TAIL.sub("", guessed)))
+    names.discard("")
+    return names
+
+
+def release_matches_subscription(subscription: MediaSubscription, release_title: str) -> bool:
+    wanted = {normalize_title(title) for title in subscription_titles(subscription)}
+    wanted.discard("")
+    return bool(wanted & release_candidate_names(release_title))
 
 
 def tv_scope_matches_release(scope: TvSubscriptionScope, release_title: str) -> bool:
@@ -209,6 +269,7 @@ async def scan_due_subscriptions(
     settings: Settings | None = None,
     profile_provider: ProfileProvider | None = None,
     delivery_service: NotificationDeliveryService | None = None,
+    tmdb=None,
     interval_seconds: int,
     now: Clock,
 ) -> None:
@@ -230,9 +291,12 @@ async def scan_due_subscriptions(
             if profile is None or profile.media_type is not subscription.type:
                 profile = get_or_create_profile(session, subscription.type)
             profile_service = QualityProfileService()
-            for release in await indexer.search(subscription_query(subscription)):
+            await _ensure_search_titles(session, subscription, tmdb, settings)
+            for release in await _search_all(indexer, subscription):
                 parsed = parse_release(release.title)
                 if parsed["media_type"] != subscription.type.value:
+                    continue
+                if not release_matches_subscription(subscription, release.title):
                     continue
                 scopes: list[TvSubscriptionScope] = []
                 if subscription.type == MediaType.TV:
@@ -401,6 +465,49 @@ async def scan_due_subscriptions(
             failed_subscription.next_check_at = completed_at + timedelta(seconds=interval_seconds)
             session.add(failed_subscription)
             session.commit()
+
+
+async def _ensure_search_titles(
+    session: Session, subscription: MediaSubscription, tmdb, settings: Settings | None
+) -> None:
+    """Lazily compute and persist ``search_titles`` for pre-existing rows."""
+    if subscription.search_titles or tmdb is None or not getattr(tmdb, "configured", False):
+        return
+    languages = settings.tmdb_title_languages if settings is not None else Settings().tmdb_title_languages
+    try:
+        localized = await fetch_localized_titles(
+            tmdb, subscription.tmdb_id, subscription.type, languages, ignore_errors=False
+        )
+    except TmdbError:
+        # Fall back to the stored titles for this scan; retry next time.
+        return
+    subscription.search_titles = build_search_titles(
+        localized, subscription.original_title, subscription.title
+    )
+    session.add(subscription)
+    session.commit()
+
+
+async def _search_all(indexer: IndexerClient, subscription: MediaSubscription) -> list[ReleaseResult]:
+    """Run one search per title; tolerate partial failures, merge and dedupe."""
+    results: list[ReleaseResult] = []
+    seen: set[str] = set()
+    errors: list[Exception] = []
+    queries = subscription_queries(subscription)
+    for query in queries:
+        try:
+            found = await indexer.search(query)
+        except Exception as exc:  # noqa: BLE001 - one failing query must not drop the rest
+            errors.append(exc)
+            continue
+        for release in found:
+            fingerprint = release_fingerprint(subscription.id, release)
+            if fingerprint not in seen:
+                seen.add(fingerprint)
+                results.append(release)
+    if queries and len(errors) == len(queries):
+        raise errors[0]
+    return results
 
 
 def _auto_grab_tv_episodes(

@@ -29,7 +29,7 @@ from skald.services.grab import (
 )
 from skald.episodes import serialize_episode_set
 from skald.subscriptions import persisted_tv_subscription_scopes, tv_target_episode_numbers
-from skald.tmdb import TmdbError
+from skald.tmdb import TmdbError, build_search_titles, fetch_localized_titles
 
 from skald.templating import templates
 
@@ -215,6 +215,15 @@ async def create_subscription(
             .where(MediaSubscription.type == media_type)
         ).first()
 
+    # Localized titles are best-effort: a TMDB hiccup must not block creation.
+    localized = await fetch_localized_titles(
+        request.app.state.tmdb,
+        media.tmdb_id,
+        media.type,
+        request.app.state.settings.tmdb_title_languages,
+    )
+    search_titles = build_search_titles(localized, media.original_title, media.title)
+
     subscription_id = None
     created = False
     with get_session(request.app.state.engine) as session:
@@ -228,6 +237,7 @@ async def create_subscription(
                 original_title=media.original_title,
                 year=media.year,
                 poster_url=media.poster_url,
+                search_titles=search_titles,
             ))
             try:
                 session.commit()

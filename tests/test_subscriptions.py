@@ -413,8 +413,8 @@ async def test_due_scan_treats_concurrent_fingerprint_conflict_as_successful_ded
 async def test_delivery_failure_does_not_stop_the_next_subscription_scan(session):
     now = datetime(2026, 9, 3, tzinfo=UTC)
     session.add_all([
-        MediaSubscription(tmdb_id=1, type=MediaType.MOVIE, title="First", next_check_at=now),
-        MediaSubscription(tmdb_id=2, type=MediaType.MOVIE, title="Second", next_check_at=now),
+        MediaSubscription(tmdb_id=1, type=MediaType.MOVIE, title="Film", next_check_at=now),
+        MediaSubscription(tmdb_id=2, type=MediaType.MOVIE, title="Film", next_check_at=now),
     ])
     session.commit()
 
@@ -1022,6 +1022,8 @@ async def test_enabling_auto_download_after_discovery_grabs_movie_once(session):
 
 class FakeTmdb:
     def __init__(self, results=None, media=None, seasons=None, season=None, error=None, configured=True):
+        self.localized = {}
+        self.localized_error = None
         self.results = results or []
         self.media = media
         self.seasons = seasons or []
@@ -1045,6 +1047,11 @@ class FakeTmdb:
         if self.error:
             raise self.error
         return self.media
+
+    async def get_localized_title(self, tmdb_id, media_type, language):
+        if self.localized_error:
+            raise self.localized_error
+        return self.localized.get(language)
 
     async def get_tv_seasons(self, tmdb_id):
         self.seasons_requests.append(tmdb_id)

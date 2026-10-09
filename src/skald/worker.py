@@ -73,6 +73,7 @@ async def poll_once(
     subscription_check_interval_seconds: int = 6 * 60 * 60,
     settings: Settings | None = None,
     delivery_service: NotificationDeliveryService | None = None,
+    tmdb=None,
 ) -> None:
     try:
         jobs = session.exec(select(MediaJob).where(MediaJob.status.in_(ACTIVE_STATUSES))).all()
@@ -126,6 +127,7 @@ async def poll_once(
                 profile_provider=lambda: session.get(QualityProfile, 1)
                 or default_quality_profile(),
                 delivery_service=delivery_service,
+                tmdb=tmdb,
                 interval_seconds=subscription_check_interval_seconds,
                 now=lambda: datetime.now(timezone.utc),
             )
@@ -1009,6 +1011,7 @@ async def worker_loop(
     subscription_check_interval_seconds: int = 6 * 60 * 60,
     settings: Settings | None = None,
     delivery_service: NotificationDeliveryService | None = None,
+    tmdb=None,
 ) -> None:
     while True:
         session = None
@@ -1023,6 +1026,7 @@ async def worker_loop(
                     subscription_check_interval_seconds=subscription_check_interval_seconds,
                     settings=settings,
                     delivery_service=delivery_service,
+                    tmdb=tmdb,
                 )
         except Exception:  # noqa: BLE001 - keep the worker alive across transient database failures
             logger.exception("worker poll failed")
